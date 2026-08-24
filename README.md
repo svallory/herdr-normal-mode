@@ -9,6 +9,19 @@ than at a list of names.
 Spaces and agents are one continuous list: keep pressing `j` past the last
 space and the cursor carries on into the agents section.
 
+## Why not `prefix+g`
+
+Herdr already has a Goto picker on `prefix+g`: an overlay with a search field,
+every workspace, tab and pane in one list, filters for what the agents are
+doing, and `enter` to switch. When you know the name of what you want, that is
+the thing to reach for, and this plugin does not try to replace it.
+
+This is for when you do not know. Nothing here is confirmed: every keystroke
+moves Herdr's focus for real, so you decide by looking at the pane itself, at
+full size and in its own place, rather than at its name and a line of detail in
+a list. And the mode stays open, so the next candidate is one more keystroke
+instead of another `prefix+g`.
+
 ## Install
 
 Requires the Rust toolchain (`cargo`).
