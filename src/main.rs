@@ -1,6 +1,6 @@
 //! A vim-like normal mode for the herdr sidebar: `j` and `k` walk the spaces
 //! and agents as one list, `h` and `l` walk the tabs of whichever workspace the
-//! cursor is in, and herdr's focus follows.
+//! cursor is in, `0`-`9` jump to a pane on the map, and herdr's focus follows.
 //!
 //! This runs as a session-modal popup. Any other placement would be pushed
 //! behind the pane we just focused, taking our input and our drawing with it.
@@ -11,14 +11,17 @@ use std::time::Duration;
 use crossterm::event::{self, Event};
 use crossterm::terminal;
 
-use herdr_normal_mode::herdr::{fetch_lists, focus_row, focus_tab, herdr_bin};
+use herdr_normal_mode::herdr::Herdr;
 use herdr_normal_mode::{
-    Action, Row, Tabs, build_rows, handle_key, initial_cursor, keys_row, mode_row, move_cursor,
-    resolve_active_ids,
+    Action, Layout, POPUP_HEIGHT, POPUP_WIDTH, PaneRef, Row, Tabs, build_rows, handle_key,
+    initial_cursor, move_cursor, pane_at, pane_in_tab, popup_rows, resolve_active_ids, tab_of_pane,
 };
 
 fn main() {
-    let herdr = herdr_bin();
+    // No socket means no herdr to drive, and nowhere to say so.
+    let Some(herdr) = Herdr::connect() else {
+        return;
+    };
 
     let context_json = std::env::var("HERDR_PLUGIN_CONTEXT_JSON").ok();
     // No pane fallback on purpose: `HERDR_PANE_ID` is this popup's own id.
@@ -27,9 +30,16 @@ fn main() {
         resolve_active_ids(context_json.as_deref(), env_workspace_id.as_deref());
     let own_pane_id = std::env::var("HERDR_PANE_ID").ok();
 
-    let (workspaces, agents, tab_list) = fetch_lists(&herdr);
-    let rows = build_rows(&workspaces, &agents, own_pane_id.as_deref());
-    let mut tabs = Tabs::new(&workspaces, &tab_list);
+    let lists = herdr.lists();
+    let rows = build_rows(&lists.workspaces, &lists.agents, own_pane_id.as_deref());
+    // The popup is a pane too. Naming it when asking for a layout would draw
+    // the popup rather than the tab behind it, so it is dropped here the same
+    // way it is dropped from the rows.
+    let panes: Vec<PaneRef> = lists
+        .panes
+        .into_iter()
+        .filter(|pane| Some(pane.pane_id.as_str()) != own_pane_id.as_deref())
+        .collect();
 
     // Nothing to walk means herdr answered with no workspaces at all, which it
     // cannot do while we are running inside one of them. Close again rather
@@ -38,6 +48,7 @@ fn main() {
         return;
     }
 
+    let mut tabs = Tabs::new(&lists.workspaces, &lists.tabs);
     let start = initial_cursor(&rows, active_pane_id.as_deref(), active_workspace_id.as_deref());
     // Nothing is done with a failure. Every error `run` can return comes from
     // the terminal itself, which is the only place a report could go, and herdr
@@ -45,27 +56,35 @@ fn main() {
     // and nothing the user could do about it. Dropping it here is also what
     // keeps a `?` inside `run` from skipping the restore below and stranding
     // the terminal in raw mode.
-    let _ = run(&herdr, &rows, start, &mut tabs);
+    let _ = run(&herdr, &rows, &panes, &mut tabs, start);
     let _ = restore();
 }
 
-fn run(herdr: &str, rows: &[Row], start: Option<usize>, tabs: &mut Tabs) -> io::Result<()> {
+fn run(
+    herdr: &Herdr,
+    rows: &[Row],
+    panes: &[PaneRef],
+    tabs: &mut Tabs,
+    start: Option<usize>,
+) -> io::Result<()> {
     terminal::enable_raw_mode()?;
     // No alternate screen: the popup is its own surface and gets torn down
     // with us.
     print!("\x1b[?25l\x1b[2J\x1b[H");
 
     let mut cursor = start.unwrap_or(0);
-    // Written once and then left alone: the rows say the mode is on and how to
-    // work it, neither of which a keystroke changes. Where the cursor is shows
-    // in the sidebar, which the focus below moves for us.
-    write_rows()?;
 
     // The row herdr is focused on, as far as we know. `None` when the cursor
     // started somewhere we could not match, so the first settle really sends a
     // focus. We never re-read herdr's own `focused` flags — following our own
     // focus changes would be a loop.
     let mut followed = start;
+
+    // The map on screen, and the tab it is of. Drawn empty first: the layout
+    // needs a round trip, and the mode row should not wait on it.
+    let mut layout: Option<Layout> = None;
+    draw(&layout)?;
+    settle_map(herdr, rows, cursor, panes, tabs, &mut layout)?;
 
     loop {
         // Settle the focus once the burst is over. Holding `j` queues keys
@@ -77,16 +96,29 @@ fn run(herdr: &str, rows: &[Row], start: Option<usize>, tabs: &mut Tabs) -> io::
             && !event::poll(Duration::ZERO)?
             // Only count the row as reached if herdr accepted it. A pane that
             // died while the popup was open should be retried, not written off.
-            && focus_row(herdr, &rows[cursor])
+            && herdr.focus_row(&rows[cursor])
         {
             followed = Some(cursor);
+            // Landing on an agent moves its workspace to the tab that agent is
+            // in, so the ring has to follow — `h` would otherwise step on from
+            // a tab the workspace has left, and the map would draw that tab.
+            if let Row::Agent {
+                pane_id,
+                workspace_id: Some(workspace_id),
+            } = &rows[cursor]
+                && let Some(tab_id) = tab_of_pane(panes, pane_id)
+            {
+                tabs.point_at(workspace_id, tab_id);
+            }
+            settle_map(herdr, rows, cursor, panes, tabs, &mut layout)?;
         }
 
         match event::read()? {
             Event::Key(key) => match handle_key(&key) {
                 Action::Move(delta) => {
                     // The cursor tracks the keystroke without waiting on
-                    // herdr; the focus catches up at the settle above.
+                    // herdr; the focus and the map catch up at the settle
+                    // above.
                     cursor = move_cursor(cursor, rows.len(), delta);
                 }
                 Action::Tab(delta) => {
@@ -99,14 +131,25 @@ fn run(herdr: &str, rows: &[Row], start: Option<usize>, tabs: &mut Tabs) -> io::
                     if let Some(workspace_id) = rows[cursor].workspace_id()
                         && let Some(tab_id) = tabs.step(workspace_id, delta)
                     {
-                        focus_tab(herdr, tab_id);
+                        herdr.focus_tab(tab_id);
+                    }
+                    settle_map(herdr, rows, cursor, panes, tabs, &mut layout)?;
+                }
+                Action::Pane(index) => {
+                    // The map does not change: it draws the shape of the tab,
+                    // and jumping within it moves the focus but not the shape.
+                    // `followed` is left alone for the same reason as above.
+                    if let Some(layout) = layout.as_ref()
+                        && let Some(pane_id) = pane_at(layout, index)
+                    {
+                        herdr.focus_pane(pane_id);
                     }
                 }
                 Action::Quit => {
                     // A burst that ended in a quit never reached the settle
                     // above; land on the row the cursor stopped on.
                     if followed != Some(cursor) {
-                        focus_row(herdr, &rows[cursor]);
+                        herdr.focus_row(&rows[cursor]);
                     }
                     break;
                 }
@@ -114,7 +157,7 @@ fn run(herdr: &str, rows: &[Row], start: Option<usize>, tabs: &mut Tabs) -> io::
             },
             // A resize can clear the pane out from under us, so put the rows
             // back.
-            Event::Resize(..) => write_rows()?,
+            Event::Resize(..) => draw(&layout)?,
             _ => {}
         }
     }
@@ -122,18 +165,57 @@ fn run(herdr: &str, rows: &[Row], start: Option<usize>, tabs: &mut Tabs) -> io::
     Ok(())
 }
 
-/// Both rows, each placed by absolute position. A newline would do instead, but
+/// Bring the map up to date with the tab the cursor now points at, and draw
+/// again only if that tab is not the one already drawn — every other keystroke
+/// leaves the same shape on screen.
+fn settle_map(
+    herdr: &Herdr,
+    rows: &[Row],
+    cursor: usize,
+    panes: &[PaneRef],
+    tabs: &Tabs,
+    layout: &mut Option<Layout>,
+) -> io::Result<()> {
+    let target = rows[cursor]
+        .workspace_id()
+        .and_then(|workspace_id| tabs.current(workspace_id))
+        .map(str::to_string);
+    if layout.as_ref().map(|held| held.tab_id.as_str()) == target.as_deref() {
+        return Ok(());
+    }
+    *layout = target
+        .as_deref()
+        .and_then(|tab_id| pane_in_tab(panes, tab_id))
+        .and_then(|pane_id| herdr.layout(pane_id));
+    draw(layout)
+}
+
+/// Every row, each placed by absolute position. A newline would do instead, but
 /// only until the pane is exactly as tall as what we draw — then the last one
 /// scrolls the first row away.
-fn write_rows() -> io::Result<()> {
+///
+/// The rows are laid out against the pane herdr actually gave us, not against
+/// the manifest. Writing past the last row does not fail: the terminal clamps
+/// the cursor and the row lands on top of the one above, which is how the keys
+/// went missing when the manifest was read one row too generously.
+fn draw(layout: &Option<Layout>) -> io::Result<()> {
+    let (width, height) = viewport();
     let mut stdout = io::stdout();
-    write!(
-        stdout,
-        "\x1b[1;1H\x1b[2K{}\x1b[2;1H\x1b[2K{}",
-        mode_row(),
-        keys_row()
-    )?;
+    for (index, row) in popup_rows(layout.as_ref(), width, height)
+        .iter()
+        .enumerate()
+    {
+        write!(stdout, "\x1b[{};1H\x1b[2K{row}", index + 1)?;
+    }
     stdout.flush()
+}
+
+/// The pane's own size. A pane that will not say how big it is gets the size the
+/// manifest asks for, which is the size it was going to be anyway.
+fn viewport() -> (usize, usize) {
+    terminal::size()
+        .map(|(columns, rows)| (columns as usize, rows as usize))
+        .unwrap_or((POPUP_WIDTH, POPUP_HEIGHT))
 }
 
 fn restore() -> io::Result<()> {

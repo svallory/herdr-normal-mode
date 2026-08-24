@@ -12,20 +12,33 @@ struct Span {
     text: &'static str,
 }
 
-/// The first row: that the mode is on, as a chip like herdr's own `PREFIX`.
-const MODE_ROW: &[Span] = &[Span { sgr: "7", text: " NORMAL " }];
-
-/// The second row: the keys and what they do. Which row the cursor is on is
-/// deliberately absent — the sidebar highlights it already, because every move
-/// really moves herdr's focus.
+/// The only row the popup writes that is not the map. That the mode is on is
+/// said by the popup's own title, and which row, tab or pane you are on is said
+/// by herdr itself — the sidebar, the tab bar, and the focused pane's border.
 const KEYS_ROW: &[Span] = &[
     Span { sgr: "1", text: "j/k" },
     Span { sgr: "2", text: " row  " },
     Span { sgr: "1", text: "h/l" },
     Span { sgr: "2", text: " tab  " },
+    Span { sgr: "1", text: "0-9" },
+    Span { sgr: "2", text: " pane  " },
     Span { sgr: "1", text: "i" },
     Span { sgr: "2", text: " exit" },
 ];
+
+/// The pane the popup in the manifest works out to: herdr hands a popup its
+/// outer width less three columns, and its outer height less two rows.
+///
+/// The keys row is held against the width by a test. Neither is used to lay the
+/// rows out — the pane is asked how big it really is for that — so these are
+/// only what to assume for a pane that will not answer.
+pub const POPUP_WIDTH: usize = 35;
+pub const POPUP_HEIGHT: usize = 9;
+
+/// Digits `0` to `9` is what the number row offers, and a tab with more panes
+/// than that is not one anyone navigates by looking at a map. The rest are
+/// still drawn — leaving them out would make the shape a lie.
+const MAX_LABELLED: usize = 10;
 
 /// Each span in its own SGR, reset after every one of them: an escape left open
 /// would tint whatever herdr draws next.
@@ -36,12 +49,27 @@ fn render_row(spans: &[Span]) -> String {
         .collect()
 }
 
-pub fn mode_row() -> String {
-    render_row(MODE_ROW)
-}
-
-pub fn keys_row() -> String {
-    render_row(KEYS_ROW)
+/// Every row of the popup, in order, styled and ready to write: the map filling
+/// everything above the last row, and the keys on the last row.
+///
+/// Sized from the pane herdr actually gave us rather than from the manifest. The
+/// manifest decides how big the popup is, but reading the size back is what
+/// keeps the keys on screen: a popup a row shorter than the manifest reads like
+/// would otherwise drop them off the bottom, and the terminal would quietly
+/// write them over the row above instead.
+///
+/// A tab we could not read a layout for leaves the map blank rather than
+/// letting the keys slide up into it — the popup does not resize, so there is
+/// nothing to gain by moving them.
+pub fn popup_rows(layout: Option<&Layout>, width: usize, height: usize) -> Vec<String> {
+    let map_height = height.saturating_sub(1);
+    let mut rows = Vec::with_capacity(height);
+    match layout {
+        Some(layout) => rows.extend(render_map(layout, width, map_height)),
+        None => rows.extend(std::iter::repeat_n(String::new(), map_height)),
+    }
+    rows.push(render_row(KEYS_ROW));
+    rows
 }
 
 /// A workspace as the sidebar shows it, in the order `workspace list` returns.
@@ -62,6 +90,40 @@ pub struct Agent {
     /// agent. Optional so an entry that does not say drops its tab stepping
     /// rather than dropping itself out of the list.
     pub workspace_id: Option<String>,
+}
+
+/// A rectangle of terminal cells, as `pane.layout` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct Rect {
+    pub x: i64,
+    pub y: i64,
+    pub width: i64,
+    pub height: i64,
+}
+
+/// One pane in a tab's layout: the id a digit key focuses, and where on the map
+/// that digit goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayoutPane {
+    pub pane_id: String,
+    pub rect: Rect,
+}
+
+/// How one tab's panes tile it. The tab is carried along so the caller can tell
+/// whether the layout it is holding is still the one it wants drawn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Layout {
+    pub tab_id: String,
+    pub area: Rect,
+    pub panes: Vec<LayoutPane>,
+}
+
+/// A pane and the tab it sits in, from `pane.list`. A layout is asked for by
+/// pane and never by tab, so drawing a tab's map needs one of its panes to name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneRef {
+    pub pane_id: String,
+    pub tab_id: String,
 }
 
 /// A tab as `tab list` returns it. The label is absent on purpose: herdr's own
@@ -95,6 +157,7 @@ impl Row {
 pub enum Action {
     Move(isize),
     Tab(isize),
+    Pane(usize),
     Quit,
     Ignore,
 }
@@ -133,6 +196,42 @@ struct RawWorkspace {
     workspace_id: Option<String>,
     #[serde(default)]
     active_tab_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PaneLayoutResult {
+    layout: RawLayout,
+}
+
+#[derive(Deserialize)]
+struct RawLayout {
+    #[serde(default)]
+    tab_id: Option<String>,
+    area: Rect,
+    #[serde(default)]
+    panes: Vec<RawLayoutPane>,
+}
+
+#[derive(Deserialize)]
+struct RawLayoutPane {
+    #[serde(default)]
+    pane_id: Option<String>,
+    #[serde(default)]
+    rect: Option<Rect>,
+}
+
+#[derive(Deserialize)]
+struct PaneListResult {
+    #[serde(default)]
+    panes: Vec<RawPaneRef>,
+}
+
+#[derive(Deserialize)]
+struct RawPaneRef {
+    #[serde(default)]
+    pane_id: Option<String>,
+    #[serde(default)]
+    tab_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -248,6 +347,143 @@ pub fn parse_tab_list(json: &str) -> Vec<Tab> {
         .collect()
 }
 
+/// The panes of one tab and the area they tile.
+///
+/// `None` for anything we cannot draw from — the popup shows a blank map rather
+/// than a wrong one.
+pub fn parse_pane_layout(json: &str) -> Option<Layout> {
+    let envelope = serde_json::from_str::<Envelope<PaneLayoutResult>>(json).ok()?;
+    let raw = envelope.result.layout;
+    Some(Layout {
+        tab_id: raw.tab_id?,
+        area: raw.area,
+        panes: raw
+            .panes
+            .into_iter()
+            .filter_map(|pane| {
+                Some(LayoutPane {
+                    pane_id: pane.pane_id?,
+                    rect: pane.rect?,
+                })
+            })
+            .collect(),
+    })
+}
+
+/// Every pane in the session with the tab it sits in, in the order `pane.list`
+/// returned them.
+pub fn parse_pane_list(json: &str) -> Vec<PaneRef> {
+    let Ok(envelope) = serde_json::from_str::<Envelope<PaneListResult>>(json) else {
+        return Vec::new();
+    };
+    envelope
+        .result
+        .panes
+        .into_iter()
+        .filter_map(|raw| {
+            Some(PaneRef {
+                pane_id: raw.pane_id?,
+                tab_id: raw.tab_id?,
+            })
+        })
+        .collect()
+}
+
+/// A pane in `tab_id`, to name when asking for that tab's layout. Any of them
+/// will do: the layout comes back for the whole tab either way.
+pub fn pane_in_tab<'a>(panes: &'a [PaneRef], tab_id: &str) -> Option<&'a str> {
+    panes
+        .iter()
+        .find(|pane| pane.tab_id == tab_id)
+        .map(|pane| pane.pane_id.as_str())
+}
+
+/// The tab a pane sits in. Focusing an agent moves its workspace to the tab
+/// that agent is in, and the tab ring has to be told.
+pub fn tab_of_pane<'a>(panes: &'a [PaneRef], pane_id: &str) -> Option<&'a str> {
+    panes
+        .iter()
+        .find(|pane| pane.pane_id == pane_id)
+        .map(|pane| pane.tab_id.as_str())
+}
+
+/// The pane a digit key names, if a pane is what it names.
+pub fn pane_at(layout: &Layout, index: usize) -> Option<&str> {
+    if index >= MAX_LABELLED {
+        return None;
+    }
+    layout
+        .panes
+        .get(index)
+        .map(|pane| pane.pane_id.as_str())
+}
+
+/// Place an offset inside the area onto the drawing, so that the area's far
+/// edge lands on the last column or row rather than one past it. Two panes that
+/// meet therefore meet on one line in the drawing too, instead of drawing two
+/// lines side by side.
+fn scale(offset: i64, span: i64, to: usize) -> usize {
+    if span <= 0 || to == 0 {
+        return 0;
+    }
+    let last = (to - 1) as i64;
+    (((offset * last) + span / 2) / span).clamp(0, last) as usize
+}
+
+/// A scaled drawing of a tab's panes, one line per row, each pane a box with
+/// its digit in the middle.
+///
+/// The boxes go on first and the digits after, so a digit cannot be painted
+/// over by a neighbour's edge.
+pub fn render_map(layout: &Layout, width: usize, height: usize) -> Vec<String> {
+    // A box needs a row and a column to be drawn in. A pane too small to give
+    // the map either is not a pane the map can say anything in.
+    if width == 0 || height == 0 {
+        return vec![String::new(); height];
+    }
+    let mut grid = vec![vec![' '; width]; height];
+    let corners: Vec<(usize, usize, usize, usize)> = layout
+        .panes
+        .iter()
+        .map(|pane| {
+            (
+                scale(pane.rect.x - layout.area.x, layout.area.width, width),
+                scale(
+                    pane.rect.x + pane.rect.width - layout.area.x,
+                    layout.area.width,
+                    width,
+                ),
+                scale(pane.rect.y - layout.area.y, layout.area.height, height),
+                scale(
+                    pane.rect.y + pane.rect.height - layout.area.y,
+                    layout.area.height,
+                    height,
+                ),
+            )
+        })
+        .collect();
+
+    for &(x0, x1, y0, y1) in &corners {
+        grid[y0][x0..=x1].fill('-');
+        grid[y1][x0..=x1].fill('-');
+        for row in &mut grid[y0..=y1] {
+            row[x0] = '|';
+            row[x1] = '|';
+        }
+        for (y, x) in [(y0, x0), (y0, x1), (y1, x0), (y1, x1)] {
+            grid[y][x] = '+';
+        }
+    }
+
+    for (index, &(x0, x1, y0, y1)) in corners.iter().take(MAX_LABELLED).enumerate() {
+        // `as u32` is safe for an index below ten, and so is the unwrap.
+        let digit = char::from_digit(index as u32, 10).unwrap_or('?');
+        grid[(y0 + y1) / 2][(x0 + x1) / 2] = digit;
+    }
+
+    grid.into_iter().map(|row| row.into_iter().collect()).collect()
+}
+
 /// One continuous list matching the sidebar: the spaces section, then the
 /// agents section. Both keep the order the CLI returned them in.
 pub fn build_rows(workspaces: &[Workspace], agents: &[Agent], own_pane_id: Option<&str>) -> Vec<Row> {
@@ -331,6 +567,35 @@ impl Tabs {
         Self { rings }
     }
 
+    /// The tab `workspace_id` is showing, as far as we know.
+    pub fn current(&self, workspace_id: &str) -> Option<&str> {
+        let ring = self
+            .rings
+            .iter()
+            .find(|ring| ring.workspace_id == workspace_id)?;
+        ring.tab_ids.get(ring.cursor).map(String::as_str)
+    }
+
+    /// Note that a workspace is showing `tab_id`. A focus we sent can move a
+    /// workspace to a tab we did not step to — landing on an agent does exactly
+    /// that — and `h` would otherwise step on from a tab it has left.
+    ///
+    /// A tab the ring does not hold is ignored rather than recorded: there is
+    /// nothing to step from either way, and a cursor out of range would be
+    /// worse than a stale one.
+    pub fn point_at(&mut self, workspace_id: &str, tab_id: &str) {
+        let Some(ring) = self
+            .rings
+            .iter_mut()
+            .find(|ring| ring.workspace_id == workspace_id)
+        else {
+            return;
+        };
+        if let Some(index) = ring.tab_ids.iter().position(|held| held == tab_id) {
+            ring.cursor = index;
+        }
+    }
+
     /// Step `delta` tabs in `workspace_id` and name the tab to focus, wrapping
     /// at both ends the way the rows do.
     ///
@@ -374,6 +639,10 @@ pub fn handle_key(event: &KeyEvent) -> Action {
         KeyCode::Char('k') if bare => Action::Move(-1),
         KeyCode::Char('l') if bare => Action::Tab(1),
         KeyCode::Char('h') if bare => Action::Tab(-1),
+        // The number row jumps straight to a pane on the map.
+        KeyCode::Char(digit) if bare && digit.is_ascii_digit() => {
+            Action::Pane(digit as usize - '0' as usize)
+        }
         KeyCode::Char('i') | KeyCode::Enter if bare => Action::Quit,
         _ => Action::Ignore,
     }
@@ -742,32 +1011,30 @@ mod tests {
     /// work it. Which row the cursor is on is not among them — the sidebar
     /// highlights that itself, since every move really does shift the focus.
     #[test]
-    fn the_rows_name_the_mode_and_the_keys() {
-        let mode = mode_row();
-        let keys = keys_row();
+    fn the_keys_row_names_every_key() {
+        let keys = render_row(KEYS_ROW);
 
-        assert!(mode.contains("NORMAL"), "{mode:?}");
-        for part in ["j/k", "row", "h/l", "tab", "i", "exit"] {
+        for part in ["j/k", "row", "h/l", "tab", "0-9", "pane", "i", "exit"] {
             assert!(keys.contains(part), "{part} missing from {keys:?}");
         }
     }
 
-    /// The rows go to the pane as they stand, with no fitting done at runtime,
-    /// so they have to fit the popup the manifest asks for. Measured: herdr
-    /// hands a popup its outer width less three columns, so the 28 in the
-    /// manifest leaves 25. A longer row would wrap, and the wrap would push the
-    /// other row out of the two the popup has.
+    /// The keys row goes to the pane as it stands, with no fitting done at
+    /// runtime, so it has to fit the popup the manifest asks for. A longer row
+    /// would wrap, and the wrapped half would scroll the map up out of sight.
     ///
     /// Being ASCII is what lets the row be measured in bytes: a wide character
     /// would take two columns while counting as more bytes still.
     #[test]
-    fn the_rows_fit_the_popup_the_manifest_asks_for() {
-        for spans in [MODE_ROW, KEYS_ROW] {
-            let text: String = spans.iter().map(|span| span.text).collect();
+    fn the_keys_row_fits_the_popup_the_manifest_asks_for() {
+        let text: String = KEYS_ROW.iter().map(|span| span.text).collect();
 
-            assert!(text.is_ascii(), "{text:?}");
-            assert!(text.len() <= 25, "{text:?} is {} columns", text.len());
-        }
+        assert!(text.is_ascii(), "{text:?}");
+        assert!(
+            text.len() <= POPUP_WIDTH,
+            "{text:?} is {} columns",
+            text.len()
+        );
     }
 
     #[test]
@@ -878,16 +1145,256 @@ mod tests {
         );
     }
 
+    /// Trimmed from a real `pane.layout` reply: two panes side by side in the
+    /// tab `w9:t4W`, each half of a 212-by-64 cell area.
+    const PANE_LAYOUT_JSON: &str = r#"{
+        "id": "probe",
+        "result": {
+            "type": "pane_layout",
+            "layout": {
+                "workspace_id": "w9",
+                "tab_id": "w9:t4W",
+                "zoomed": false,
+                "area": {"x": 26, "y": 1, "width": 212, "height": 64},
+                "focused_pane_id": "w9:pEY",
+                "panes": [
+                    {"pane_id": "w9:pEY", "focused": true, "rect": {"x": 26, "y": 1, "width": 106, "height": 64}},
+                    {"pane_id": "w9:pF1", "focused": false, "rect": {"x": 132, "y": 1, "width": 106, "height": 64}}
+                ],
+                "splits": [{"id": "split_0_root", "direction": "right", "ratio": 0.5, "rect": {"x": 26, "y": 1, "width": 212, "height": 64}}]
+            }
+        }
+    }"#;
+
+    /// Trimmed from a real `pane.list` reply.
+    const PANE_LIST_JSON: &str = r#"{
+        "id": "probe",
+        "result": {
+            "type": "pane_list",
+            "panes": [
+                {"pane_id": "w7:p8", "tab_id": "w7:t4", "workspace_id": "w7", "focused": false},
+                {"pane_id": "w9:pC8", "tab_id": "w9:t2J", "workspace_id": "w9", "focused": false},
+                {"pane_id": "w9:pCC", "tab_id": "w9:t2J", "workspace_id": "w9", "focused": false},
+                {"pane_id": "w9:pEY", "tab_id": "w9:t4W", "workspace_id": "w9", "focused": true}
+            ]
+        }
+    }"#;
+
+    /// One pane filling a whole area, for the cases where the shape does not
+    /// matter and only the drawing does.
+    fn one_pane_layout() -> Layout {
+        Layout {
+            tab_id: "w1:t1".into(),
+            area: Rect { x: 0, y: 0, width: 100, height: 40 },
+            panes: vec![LayoutPane {
+                pane_id: "w1:p1".into(),
+                rect: Rect { x: 0, y: 0, width: 100, height: 40 },
+            }],
+        }
+    }
+
+    #[test]
+    fn parses_a_layout_into_its_area_and_panes() {
+        let layout = parse_pane_layout(PANE_LAYOUT_JSON).expect("a layout");
+
+        assert_eq!(layout.tab_id, "w9:t4W");
+        assert_eq!(layout.area, Rect { x: 26, y: 1, width: 212, height: 64 });
+        assert_eq!(
+            layout.panes,
+            vec![
+                LayoutPane {
+                    pane_id: "w9:pEY".into(),
+                    rect: Rect { x: 26, y: 1, width: 106, height: 64 },
+                },
+                LayoutPane {
+                    pane_id: "w9:pF1".into(),
+                    rect: Rect { x: 132, y: 1, width: 106, height: 64 },
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_layout_that_does_not_parse_is_no_layout() {
+        for json in ["", "not json", "{}", r#"{"result":{}}"#, r#"{"result":{"layout":{}}}"#] {
+            assert!(parse_pane_layout(json).is_none(), "layout from {json:?}");
+        }
+    }
+
+    #[test]
+    fn parses_panes_with_the_tab_they_sit_in() {
+        let panes = parse_pane_list(PANE_LIST_JSON);
+
+        assert_eq!(panes.len(), 4);
+        assert_eq!(panes[0], PaneRef { pane_id: "w7:p8".into(), tab_id: "w7:t4".into() });
+    }
+
+    /// A layout is asked for by pane, never by tab, so drawing a tab's map
+    /// needs one of its panes to name.
+    #[test]
+    fn a_tab_is_named_by_any_one_of_its_panes() {
+        let panes = parse_pane_list(PANE_LIST_JSON);
+
+        assert_eq!(pane_in_tab(&panes, "w9:t2J"), Some("w9:pC8"));
+        assert_eq!(pane_in_tab(&panes, "w7:t4"), Some("w7:p8"));
+        assert_eq!(pane_in_tab(&panes, "zz:t1"), None);
+    }
+
+    /// The reverse lookup, for telling the ring which tab a focused agent moved
+    /// its workspace to.
+    #[test]
+    fn a_pane_names_the_tab_it_sits_in() {
+        let panes = parse_pane_list(PANE_LIST_JSON);
+
+        assert_eq!(tab_of_pane(&panes, "w9:pEY"), Some("w9:t4W"));
+        assert_eq!(tab_of_pane(&panes, "zz:p1"), None);
+    }
+
+    /// Two panes side by side, drawn at the size the popup gives the map. The
+    /// shared edge is one column, not two: the scaling maps a pane's far edge
+    /// onto the same column as its neighbour's near edge.
+    #[test]
+    fn the_map_draws_a_box_per_pane_and_shares_their_edges() {
+        let layout = parse_pane_layout(PANE_LAYOUT_JSON).expect("a layout");
+
+        let map = render_map(&layout, 25, 8);
+
+        assert_eq!(
+            map,
+            vec![
+                "+-----------+-----------+",
+                "|           |           |",
+                "|           |           |",
+                "|     0     |     1     |",
+                "|           |           |",
+                "|           |           |",
+                "|           |           |",
+                "+-----------+-----------+",
+            ]
+        );
+    }
+
+    #[test]
+    fn one_pane_fills_the_whole_map() {
+        let map = render_map(&one_pane_layout(), 9, 4);
+
+        assert_eq!(map, vec!["+-------+", "|   0   |", "|       |", "+-------+"]);
+    }
+
+    /// Only ten panes can be reached from the number row, so only ten are
+    /// numbered. The rest are still drawn — the shape would lie otherwise.
+    #[test]
+    fn the_map_numbers_at_most_ten_panes() {
+        let panes = (0..12)
+            .map(|index| LayoutPane {
+                pane_id: format!("w1:p{index}"),
+                rect: Rect { x: index * 10, y: 0, width: 10, height: 40 },
+            })
+            .collect();
+        let layout = Layout {
+            tab_id: "w1:t1".into(),
+            area: Rect { x: 0, y: 0, width: 120, height: 40 },
+            panes,
+        };
+
+        let map = render_map(&layout, 121, 5).join("\n");
+
+        for digit in '0'..='9' {
+            assert!(map.contains(digit), "{digit} missing from\n{map}");
+        }
+        assert_eq!(pane_at(&layout, 9), Some("w1:p9"));
+        assert_eq!(pane_at(&layout, 10), None);
+    }
+
+    #[test]
+    fn a_digit_with_no_pane_behind_it_goes_nowhere() {
+        let layout = one_pane_layout();
+
+        assert_eq!(pane_at(&layout, 0), Some("w1:p1"));
+        assert_eq!(pane_at(&layout, 1), None);
+    }
+
+    #[test]
+    fn digits_jump_to_a_pane_only_without_modifiers() {
+        assert_eq!(handle_key(&press(KeyCode::Char('0'), KeyModifiers::NONE)), Action::Pane(0));
+        assert_eq!(handle_key(&press(KeyCode::Char('7'), KeyModifiers::NONE)), Action::Pane(7));
+        assert_eq!(
+            handle_key(&press(KeyCode::Char('7'), KeyModifiers::CONTROL)),
+            Action::Ignore
+        );
+    }
+
+    /// The ring has to follow a focus we sent: landing on an agent in another
+    /// tab moves the workspace there, and `h` would otherwise step from a tab
+    /// the workspace has left.
+    #[test]
+    fn the_ring_can_be_pointed_at_the_tab_a_focus_moved_to() {
+        let mut tabs = Tabs::new(
+            &parse_workspace_list(WORKSPACE_LIST_JSON),
+            &parse_tab_list(TAB_LIST_JSON),
+        );
+
+        assert_eq!(tabs.current("w9"), Some("w9:t2J"));
+
+        tabs.point_at("w9", "w9:t4Y");
+
+        assert_eq!(tabs.current("w9"), Some("w9:t4Y"));
+        // And stepping carries on from there rather than from where it started.
+        assert_eq!(tabs.step("w9", 1), Some("w9:t2J"));
+    }
+
+    #[test]
+    fn pointing_the_ring_at_an_unknown_tab_leaves_it_alone() {
+        let mut tabs = Tabs::new(
+            &parse_workspace_list(WORKSPACE_LIST_JSON),
+            &parse_tab_list(TAB_LIST_JSON),
+        );
+
+        tabs.point_at("w9", "zz:t1");
+        tabs.point_at("zz", "w9:t4Y");
+
+        assert_eq!(tabs.current("w9"), Some("w9:t2J"));
+    }
+
+    /// The keys go on the last row the pane has, whatever that turns out to be,
+    /// and the map fills what is left. A tab we could not read a layout for
+    /// leaves the map blank rather than shifting the keys up into it.
+    #[test]
+    fn the_keys_take_the_last_row_and_the_map_takes_the_rest() {
+        let layout = parse_pane_layout(PANE_LAYOUT_JSON).expect("a layout");
+
+        for height in [1, 2, 9, 20] {
+            let drawn = popup_rows(Some(&layout), POPUP_WIDTH, height);
+            let blank = popup_rows(None, POPUP_WIDTH, height);
+
+            assert_eq!(drawn.len(), height, "drawn at {height}");
+            assert_eq!(blank.len(), height, "blank at {height}");
+            assert!(drawn[height - 1].contains("j/k"), "{:?}", drawn[height - 1]);
+            assert!(blank[height - 1].contains("j/k"), "{:?}", blank[height - 1]);
+        }
+    }
+
+    /// A pane with no room for the map at all still says how to work the mode.
+    #[test]
+    fn a_pane_with_only_one_row_gives_it_to_the_keys() {
+        let layout = parse_pane_layout(PANE_LAYOUT_JSON).expect("a layout");
+
+        let rows = popup_rows(Some(&layout), POPUP_WIDTH, 1);
+
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].contains("0-9"), "{:?}", rows[0]);
+    }
+
     /// An SGR left open would carry into whatever herdr draws after the popup.
     #[test]
     fn every_span_closes_the_style_it_opened() {
-        for row in [mode_row(), keys_row()] {
-            assert!(row.ends_with("\x1b[0m"), "{row:?}");
-            assert_eq!(
-                row.matches("\x1b[0m").count(),
-                row.matches("\x1b[").count() / 2,
-                "unbalanced escapes in {row:?}"
-            );
-        }
+        let row = render_row(KEYS_ROW);
+
+        assert!(row.ends_with("\x1b[0m"), "{row:?}");
+        assert_eq!(
+            row.matches("\x1b[0m").count(),
+            row.matches("\x1b[").count() / 2,
+            "unbalanced escapes in {row:?}"
+        );
     }
 }
