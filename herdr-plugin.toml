@@ -1,0 +1,20 @@
+id = "maedana.normal-mode"
+name = "Normal Mode"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Vim-style normal mode to move the herdr sidebar with j/k"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["cargo", "build", "--release"]
+
+[[panes]]
+id = "normal"
+title = "Normal Mode"
+# popup is not a preference: this pane moves the focus itself, so anything
+# else (overlay, zoomed) gets pushed behind the pane we just focused and stops
+# receiving input. Only a session-modal popup survives.
+placement = "popup"
+width = 40
+height = 3
+command = ["sh", "-c", "${HERDR_PLUGIN_ROOT}/target/release/herdr-normal-mode"]
