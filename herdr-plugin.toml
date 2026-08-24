@@ -22,6 +22,6 @@ placement = "popup"
 # no longer has the room to draw the frame around them and the border comes out
 # broken — so a one-row popup is not on offer, and both rows are used instead.
 # The width is then just enough for the wider of the two rows.
-width = 24
+width = 28
 height = 3
 command = ["sh", "-c", "${HERDR_PLUGIN_ROOT}/target/release/herdr-normal-mode"]

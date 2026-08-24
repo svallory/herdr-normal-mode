@@ -20,7 +20,9 @@ const MODE_ROW: &[Span] = &[Span { sgr: "7", text: " NORMAL " }];
 /// really moves herdr's focus.
 const KEYS_ROW: &[Span] = &[
     Span { sgr: "1", text: "j/k" },
-    Span { sgr: "2", text: " move  " },
+    Span { sgr: "2", text: " row  " },
+    Span { sgr: "1", text: "h/l" },
+    Span { sgr: "2", text: " tab  " },
     Span { sgr: "1", text: "i" },
     Span { sgr: "2", text: " exit" },
 ];
@@ -43,9 +45,11 @@ pub fn keys_row() -> String {
 }
 
 /// A workspace as the sidebar shows it, in the order `workspace list` returns.
+/// `active_tab_id` is where `h` and `l` start walking that workspace's tabs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
     pub workspace_id: String,
+    pub active_tab_id: Option<String>,
 }
 
 /// An agent pane as the sidebar shows it, in the order `agent list` returns.
@@ -54,13 +58,35 @@ pub struct Workspace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agent {
     pub pane_id: String,
+    /// Which workspace's tabs `h` and `l` walk while the cursor is on this
+    /// agent. Optional so an entry that does not say drops its tab stepping
+    /// rather than dropping itself out of the list.
+    pub workspace_id: Option<String>,
+}
+
+/// A tab as `tab list` returns it. The label is absent on purpose: herdr's own
+/// tab bar shows it, and that is where the user is looking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tab {
+    pub tab_id: String,
+    pub workspace_id: String,
 }
 
 /// One selectable sidebar line. Spaces come first, then agents.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
     Space { workspace_id: String },
-    Agent { pane_id: String },
+    Agent { pane_id: String, workspace_id: Option<String> },
+}
+
+impl Row {
+    /// The workspace whose tabs `h` and `l` walk while the cursor is here.
+    pub fn workspace_id(&self) -> Option<&str> {
+        match self {
+            Row::Space { workspace_id } => Some(workspace_id),
+            Row::Agent { workspace_id, .. } => workspace_id.as_deref(),
+        }
+    }
 }
 
 /// What a keystroke means. Deliberately free of side effects: the caller owns
@@ -68,6 +94,7 @@ pub enum Row {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Move(isize),
+    Tab(isize),
     Quit,
     Ignore,
 }
@@ -104,6 +131,24 @@ struct WorkspaceListResult {
 struct RawWorkspace {
     #[serde(default)]
     workspace_id: Option<String>,
+    #[serde(default)]
+    active_tab_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TabListResult {
+    #[serde(default)]
+    tabs: Vec<RawTab>,
+}
+
+/// Both ids are needed: one to focus the tab, the other to know whose tab it is.
+/// An entry missing either drops itself rather than the whole list.
+#[derive(Deserialize)]
+struct RawTab {
+    #[serde(default)]
+    tab_id: Option<String>,
+    #[serde(default)]
+    workspace_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -119,6 +164,8 @@ struct AgentListResult {
 struct RawAgent {
     #[serde(default)]
     pane_id: Option<String>,
+    #[serde(default)]
+    workspace_id: Option<String>,
 }
 
 /// A present-but-blank field carries no more information than a missing one,
@@ -159,6 +206,7 @@ pub fn parse_workspace_list(json: &str) -> Vec<Workspace> {
         .filter_map(|raw| {
             Some(Workspace {
                 workspace_id: raw.workspace_id?,
+                active_tab_id: non_blank(raw.active_tab_id.as_deref()).map(str::to_string),
             })
         })
         .collect()
@@ -175,6 +223,26 @@ pub fn parse_agent_list(json: &str) -> Vec<Agent> {
         .filter_map(|raw| {
             Some(Agent {
                 pane_id: raw.pane_id?,
+                workspace_id: non_blank(raw.workspace_id.as_deref()).map(str::to_string),
+            })
+        })
+        .collect()
+}
+
+/// Every tab in the session, in the order `tab list` returned them — which is
+/// the order herdr's own tab bar shows them in, grouped by workspace.
+pub fn parse_tab_list(json: &str) -> Vec<Tab> {
+    let Ok(envelope) = serde_json::from_str::<Envelope<TabListResult>>(json) else {
+        return Vec::new();
+    };
+    envelope
+        .result
+        .tabs
+        .into_iter()
+        .filter_map(|raw| {
+            Some(Tab {
+                tab_id: raw.tab_id?,
+                workspace_id: raw.workspace_id?,
             })
         })
         .collect()
@@ -191,6 +259,7 @@ pub fn build_rows(workspaces: &[Workspace], agents: &[Agent], own_pane_id: Optio
         .filter(|agent| Some(agent.pane_id.as_str()) != own_pane_id)
         .map(|agent| Row::Agent {
             pane_id: agent.pane_id.clone(),
+            workspace_id: agent.workspace_id.clone(),
         });
     spaces.chain(agents).collect()
 }
@@ -219,6 +288,68 @@ pub fn initial_cursor(
     agent.or_else(space)
 }
 
+/// The tabs of one workspace, and which of them we last moved to.
+struct Ring {
+    workspace_id: String,
+    tab_ids: Vec<String>,
+    cursor: usize,
+}
+
+/// Every workspace's tabs, each with a cursor of its own.
+///
+/// Read once when the popup opens and stepped locally from then on, for the
+/// same reason the rows are: after the first `l` the only thing a re-read would
+/// tell us is where we ourselves moved the focus to.
+pub struct Tabs {
+    rings: Vec<Ring>,
+}
+
+impl Tabs {
+    /// One ring per workspace, in workspace order, each starting on the tab
+    /// that workspace was already showing.
+    pub fn new(workspaces: &[Workspace], tabs: &[Tab]) -> Self {
+        let rings = workspaces
+            .iter()
+            .map(|workspace| {
+                let tab_ids: Vec<String> = tabs
+                    .iter()
+                    .filter(|tab| tab.workspace_id == workspace.workspace_id)
+                    .map(|tab| tab.tab_id.clone())
+                    .collect();
+                let cursor = workspace
+                    .active_tab_id
+                    .as_deref()
+                    .and_then(|active| tab_ids.iter().position(|tab_id| tab_id == active))
+                    .unwrap_or(0);
+                Ring {
+                    workspace_id: workspace.workspace_id.clone(),
+                    tab_ids,
+                    cursor,
+                }
+            })
+            .collect();
+        Self { rings }
+    }
+
+    /// Step `delta` tabs in `workspace_id` and name the tab to focus, wrapping
+    /// at both ends the way the rows do.
+    ///
+    /// `None` when there is nowhere to step: a workspace we were told nothing
+    /// about, or one with a single tab. Naming its one tab would send herdr a
+    /// focus that changes nothing.
+    pub fn step(&mut self, workspace_id: &str, delta: isize) -> Option<&str> {
+        let ring = self
+            .rings
+            .iter_mut()
+            .find(|ring| ring.workspace_id == workspace_id)?;
+        if ring.tab_ids.len() < 2 {
+            return None;
+        }
+        ring.cursor = move_cursor(ring.cursor, ring.tab_ids.len(), delta);
+        Some(&ring.tab_ids[ring.cursor])
+    }
+}
+
 pub fn move_cursor(cursor: usize, len: usize, delta: isize) -> usize {
     if len == 0 {
         return 0;
@@ -241,6 +372,8 @@ pub fn handle_key(event: &KeyEvent) -> Action {
         }
         KeyCode::Char('j') if bare => Action::Move(1),
         KeyCode::Char('k') if bare => Action::Move(-1),
+        KeyCode::Char('l') if bare => Action::Tab(1),
+        KeyCode::Char('h') if bare => Action::Tab(-1),
         KeyCode::Char('i') | KeyCode::Enter if bare => Action::Quit,
         _ => Action::Ignore,
     }
@@ -280,6 +413,23 @@ mod tests {
         }
     }"#;
 
+    /// Trimmed from a real `herdr tab list` response. The tab ids match the
+    /// `active_tab_id` of the workspace fixture, so the two describe one
+    /// session: w7 and wB have a single tab each, w9 has three.
+    const TAB_LIST_JSON: &str = r#"{
+        "id": "cli:tab:list",
+        "result": {
+            "type": "tab_list",
+            "tabs": [
+                {"agent_status":"unknown","focused":false,"label":"devtools/master","number":4,"pane_count":1,"tab_id":"w7:t4","workspace_id":"w7"},
+                {"agent_status":"idle","focused":false,"label":"torudo/main","number":82,"pane_count":3,"tab_id":"w9:t2J","workspace_id":"w9"},
+                {"agent_status":"working","focused":false,"label":"jfa-apps/remove-list","number":156,"pane_count":1,"tab_id":"w9:t4W","workspace_id":"w9"},
+                {"agent_status":"working","focused":false,"label":"ga-pms/bv/table","number":158,"pane_count":1,"tab_id":"w9:t4Y","workspace_id":"w9"},
+                {"agent_status":"working","focused":true,"label":"herdr-normal-mode/main","number":6,"pane_count":1,"tab_id":"wB:t2","workspace_id":"wB"}
+            ]
+        }
+    }"#;
+
     fn press(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent {
             code,
@@ -295,9 +445,10 @@ mod tests {
         }
     }
 
-    fn agent_row(id: &str) -> Row {
+    fn agent_row(id: &str, workspace_id: &str) -> Row {
         Row::Agent {
             pane_id: id.into(),
+            workspace_id: Some(workspace_id.into()),
         }
     }
 
@@ -323,9 +474,9 @@ mod tests {
         assert_eq!(
             workspaces,
             vec![
-                Workspace { workspace_id: "w7".into() },
-                Workspace { workspace_id: "w9".into() },
-                Workspace { workspace_id: "wB".into() },
+                Workspace { workspace_id: "w7".into(), active_tab_id: Some("w7:t4".into()) },
+                Workspace { workspace_id: "w9".into(), active_tab_id: Some("w9:t2J".into()) },
+                Workspace { workspace_id: "wB".into(), active_tab_id: Some("wB:t2".into()) },
             ]
         );
     }
@@ -337,9 +488,9 @@ mod tests {
         assert_eq!(
             agents,
             vec![
-                Agent { pane_id: "w9:p9P".into() },
-                Agent { pane_id: "w9:pEV".into() },
-                Agent { pane_id: "wB:p2".into() },
+                Agent { pane_id: "w9:p9P".into(), workspace_id: Some("w9".into()) },
+                Agent { pane_id: "w9:pEV".into(), workspace_id: Some("w9".into()) },
+                Agent { pane_id: "wB:p2".into(), workspace_id: Some("wB".into()) },
             ]
         );
     }
@@ -361,7 +512,10 @@ mod tests {
 
         let agents = parse_agent_list(json);
 
-        assert_eq!(agents, vec![Agent { pane_id: "w1:p1".into() }]);
+        assert_eq!(
+            agents,
+            vec![Agent { pane_id: "w1:p1".into(), workspace_id: Some("w1".into()) }]
+        );
     }
 
     #[test]
@@ -373,7 +527,10 @@ mod tests {
 
         let workspaces = parse_workspace_list(json);
 
-        assert_eq!(workspaces, vec![Workspace { workspace_id: "w1".into() }]);
+        assert_eq!(
+            workspaces,
+            vec![Workspace { workspace_id: "w1".into(), active_tab_id: None }]
+        );
     }
 
     #[test]
@@ -467,9 +624,9 @@ mod tests {
                 space("w7"),
                 space("w9"),
                 space("wB"),
-                agent_row("w9:p9P"),
-                agent_row("w9:pEV"),
-                agent_row("wB:p2"),
+                agent_row("w9:p9P", "w9"),
+                agent_row("w9:pEV", "w9"),
+                agent_row("wB:p2", "wB"),
             ]
         );
     }
@@ -482,7 +639,7 @@ mod tests {
         let rows = build_rows(&workspaces, &agents, Some("w9:pEV"));
 
         assert_eq!(rows.len(), 5);
-        assert!(!rows.contains(&agent_row("w9:pEV")));
+        assert!(!rows.contains(&agent_row("w9:pEV", "w9")));
     }
 
     #[test]
@@ -590,15 +747,15 @@ mod tests {
         let keys = keys_row();
 
         assert!(mode.contains("NORMAL"), "{mode:?}");
-        for part in ["j/k", "move", "i", "exit"] {
+        for part in ["j/k", "row", "h/l", "tab", "i", "exit"] {
             assert!(keys.contains(part), "{part} missing from {keys:?}");
         }
     }
 
     /// The rows go to the pane as they stand, with no fitting done at runtime,
     /// so they have to fit the popup the manifest asks for. Measured: herdr
-    /// hands a popup its outer width less three columns, so the 24 in the
-    /// manifest leaves 21. A longer row would wrap, and the wrap would push the
+    /// hands a popup its outer width less three columns, so the 28 in the
+    /// manifest leaves 25. A longer row would wrap, and the wrap would push the
     /// other row out of the two the popup has.
     ///
     /// Being ASCII is what lets the row be measured in bytes: a wide character
@@ -609,8 +766,116 @@ mod tests {
             let text: String = spans.iter().map(|span| span.text).collect();
 
             assert!(text.is_ascii(), "{text:?}");
-            assert!(text.len() <= 21, "{text:?} is {} columns", text.len());
+            assert!(text.len() <= 25, "{text:?} is {} columns", text.len());
         }
+    }
+
+    #[test]
+    fn parses_tabs_in_cli_order_with_their_workspace() {
+        let tabs = parse_tab_list(TAB_LIST_JSON);
+
+        assert_eq!(
+            tabs,
+            vec![
+                Tab { tab_id: "w7:t4".into(), workspace_id: "w7".into() },
+                Tab { tab_id: "w9:t2J".into(), workspace_id: "w9".into() },
+                Tab { tab_id: "w9:t4W".into(), workspace_id: "w9".into() },
+                Tab { tab_id: "w9:t4Y".into(), workspace_id: "w9".into() },
+                Tab { tab_id: "wB:t2".into(), workspace_id: "wB".into() },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tab_missing_either_id_is_dropped() {
+        let json = r#"{"result":{"tabs":[
+            {"workspace_id":"w1"},
+            {"tab_id":"w1:t9"},
+            {"tab_id":"w1:t1","workspace_id":"w1"}
+        ]}}"#;
+
+        let tabs = parse_tab_list(json);
+
+        assert_eq!(
+            tabs,
+            vec![Tab { tab_id: "w1:t1".into(), workspace_id: "w1".into() }]
+        );
+    }
+
+    #[test]
+    fn broken_tab_json_yields_an_empty_list() {
+        for json in ["", "not json", "{}", r#"{"result":{"tabs":"nope"}}"#] {
+            assert!(parse_tab_list(json).is_empty(), "tabs from {json:?}");
+        }
+    }
+
+    /// A row has to say which workspace's tabs `h` and `l` walk. A space row is
+    /// its own answer; an agent row carries the workspace it lives in.
+    #[test]
+    fn a_row_names_the_workspace_whose_tabs_it_walks() {
+        let rows = full_rows();
+
+        assert_eq!(rows[1].workspace_id(), Some("w9"));
+        assert_eq!(rows[5].workspace_id(), Some("wB"));
+    }
+
+    /// Stepping starts from the tab the workspace was already on, not from its
+    /// first tab: pressing `l` on a space should land on the tab after the one
+    /// the user was looking at.
+    #[test]
+    fn stepping_tabs_starts_from_the_tab_the_workspace_was_on() {
+        let mut tabs = Tabs::new(
+            &parse_workspace_list(WORKSPACE_LIST_JSON),
+            &parse_tab_list(TAB_LIST_JSON),
+        );
+
+        // w9 was on w9:t2J, the first of its three.
+        assert_eq!(tabs.step("w9", 1), Some("w9:t4W"));
+        assert_eq!(tabs.step("w9", 1), Some("w9:t4Y"));
+    }
+
+    #[test]
+    fn stepping_tabs_wraps_at_both_ends() {
+        let mut tabs = Tabs::new(
+            &parse_workspace_list(WORKSPACE_LIST_JSON),
+            &parse_tab_list(TAB_LIST_JSON),
+        );
+
+        // Back off the front of w9's three tabs and round to the last.
+        assert_eq!(tabs.step("w9", -1), Some("w9:t4Y"));
+        assert_eq!(tabs.step("w9", 1), Some("w9:t2J"));
+    }
+
+    /// One tab is nowhere to go, and an unknown workspace is nothing to go in.
+    /// Both have to say so rather than name a tab, or the popup would send herdr
+    /// a focus that changes nothing.
+    #[test]
+    fn a_workspace_with_nothing_to_step_through_says_so() {
+        let mut tabs = Tabs::new(
+            &parse_workspace_list(WORKSPACE_LIST_JSON),
+            &parse_tab_list(TAB_LIST_JSON),
+        );
+
+        assert_eq!(tabs.step("w7", 1), None);
+        assert_eq!(tabs.step("zz", 1), None);
+    }
+
+    /// A workspace herdr listed no tabs for is not a panic.
+    #[test]
+    fn tabs_hold_up_when_a_workspace_has_no_tabs_listed() {
+        let mut tabs = Tabs::new(&parse_workspace_list(WORKSPACE_LIST_JSON), &[]);
+
+        assert_eq!(tabs.step("w9", 1), None);
+    }
+
+    #[test]
+    fn h_and_l_step_tabs_only_without_modifiers() {
+        assert_eq!(handle_key(&press(KeyCode::Char('l'), KeyModifiers::NONE)), Action::Tab(1));
+        assert_eq!(handle_key(&press(KeyCode::Char('h'), KeyModifiers::NONE)), Action::Tab(-1));
+        assert_eq!(
+            handle_key(&press(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+            Action::Ignore
+        );
     }
 
     /// An SGR left open would carry into whatever herdr draws after the popup.

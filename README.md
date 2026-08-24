@@ -1,9 +1,9 @@
 # herdr-normal-mode
 
 A vim-like normal mode for the [Herdr](https://herdr.dev) sidebar. Press a key
-to enter the mode, then walk the sidebar with `j` and `k` — every step moves
-Herdr's focus too, so you browse by looking at the panes themselves rather than
-at a list of names.
+to enter the mode, then walk the sidebar with `j` and `k` and the tabs with `h`
+and `l` — every step moves Herdr's focus too, so you browse by looking at the
+panes themselves rather than at a list of names.
 
 Spaces and agents are one continuous list: keep pressing `j` past the last
 space and the cursor carries on into the agents section.
@@ -46,10 +46,10 @@ Press `prefix+space` to enter normal mode — with `prefix = "ctrl+t"` that is
 nothing else:
 
 ```
-┌ Normal Mode ──────────┐
-│ NORMAL                │   ← reverse video, like herdr's own PREFIX chip
-│ j/k move  i exit      │   ← keys bright, what they do dim
-└───────────────────────┘
+┌ Normal Mode ─────────────┐
+│ NORMAL                   │   ← reverse video, like herdr's PREFIX chip
+│ j/k row  h/l tab  i exit │   ← keys bright, what they do dim
+└──────────────────────────┘
 ```
 
 Two rows because two rows is the floor: herdr cannot draw the frame around a
@@ -59,16 +59,27 @@ The popup says nothing about which row you are on. It does not have to: every
 move shifts herdr's own focus, so the sidebar highlights the current row and
 the pane behind the popup is the one you are on.
 
-- `j` moves down, `k` moves up; both wrap around at the ends
+- `j` moves down the sidebar, `k` moves up; both wrap around at the ends
+- `l` goes to the next tab, `h` to the previous one; these wrap too
 - Focus follows the cursor immediately — the pane behind the popup changes as
   you move
 - The cursor starts on whatever had focus when you entered the mode
-- `i` or `Enter` leaves the mode (`Ctrl+C` also works), and the focus stays on
-  the row you stopped on
+- `i` or `Enter` leaves the mode (`Ctrl+C` also works), and the focus stays
+  wherever you left it
 
-The list is read once when the mode opens and is not refreshed while it is
-open, so a space or agent that appears in the meantime shows up the next time
-you enter.
+`h` and `l` walk the tabs of whichever workspace the cursor is in — its own
+tabs when the cursor is on a space, the tabs of the workspace it lives in when
+the cursor is on an agent. They start from the tab that workspace was already
+showing, and a workspace with a single tab has nowhere to step, so nothing
+happens.
+
+Stepping a tab moves the focus off the row the cursor is on, and it stays
+there: the cursor is not dragged along, and leaving the mode does not pull the
+focus back.
+
+The lists are read once when the mode opens and are not refreshed while it is
+open, so a space, agent or tab that appears in the meantime shows up the next
+time you enter.
 
 There is no error line. If herdr does not answer, or the terminal refuses to
 give up raw mode, the popup simply closes again — the failure would have to be

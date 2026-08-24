@@ -1,5 +1,6 @@
 //! A vim-like normal mode for the herdr sidebar: `j` and `k` walk the spaces
-//! and agents as one list, and herdr's focus follows the cursor.
+//! and agents as one list, `h` and `l` walk the tabs of whichever workspace the
+//! cursor is in, and herdr's focus follows.
 //!
 //! This runs as a session-modal popup. Any other placement would be pushed
 //! behind the pane we just focused, taking our input and our drawing with it.
@@ -10,9 +11,9 @@ use std::time::Duration;
 use crossterm::event::{self, Event};
 use crossterm::terminal;
 
-use herdr_normal_mode::herdr::{fetch_lists, focus_row, herdr_bin};
+use herdr_normal_mode::herdr::{fetch_lists, focus_row, focus_tab, herdr_bin};
 use herdr_normal_mode::{
-    Action, Row, build_rows, handle_key, initial_cursor, keys_row, mode_row, move_cursor,
+    Action, Row, Tabs, build_rows, handle_key, initial_cursor, keys_row, mode_row, move_cursor,
     resolve_active_ids,
 };
 
@@ -26,8 +27,9 @@ fn main() {
         resolve_active_ids(context_json.as_deref(), env_workspace_id.as_deref());
     let own_pane_id = std::env::var("HERDR_PANE_ID").ok();
 
-    let (workspaces, agents) = fetch_lists(&herdr);
+    let (workspaces, agents, tab_list) = fetch_lists(&herdr);
     let rows = build_rows(&workspaces, &agents, own_pane_id.as_deref());
+    let mut tabs = Tabs::new(&workspaces, &tab_list);
 
     // Nothing to walk means herdr answered with no workspaces at all, which it
     // cannot do while we are running inside one of them. Close again rather
@@ -43,11 +45,11 @@ fn main() {
     // and nothing the user could do about it. Dropping it here is also what
     // keeps a `?` inside `run` from skipping the restore below and stranding
     // the terminal in raw mode.
-    let _ = run(&herdr, &rows, start);
+    let _ = run(&herdr, &rows, start, &mut tabs);
     let _ = restore();
 }
 
-fn run(herdr: &str, rows: &[Row], start: Option<usize>) -> io::Result<()> {
+fn run(herdr: &str, rows: &[Row], start: Option<usize>, tabs: &mut Tabs) -> io::Result<()> {
     terminal::enable_raw_mode()?;
     // No alternate screen: the popup is its own surface and gets torn down
     // with us.
@@ -86,6 +88,19 @@ fn run(herdr: &str, rows: &[Row], start: Option<usize>) -> io::Result<()> {
                     // The cursor tracks the keystroke without waiting on
                     // herdr; the focus catches up at the settle above.
                     cursor = move_cursor(cursor, rows.len(), delta);
+                }
+                Action::Tab(delta) => {
+                    // `followed` is deliberately left alone. Stepping a tab
+                    // moves the focus off the row the cursor is on, which is
+                    // the point — marking the row as unreached would send it a
+                    // focus again at the top of the loop and undo the step.
+                    // Coming back to this row later still re-focuses it, and
+                    // for a space that lands on the tab we stepped to.
+                    if let Some(workspace_id) = rows[cursor].workspace_id()
+                        && let Some(tab_id) = tabs.step(workspace_id, delta)
+                    {
+                        focus_tab(herdr, tab_id);
+                    }
                 }
                 Action::Quit => {
                     // A burst that ended in a quit never reached the settle
