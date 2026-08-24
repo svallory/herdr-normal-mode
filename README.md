@@ -46,22 +46,11 @@ Press `prefix+space` to enter normal mode — with `prefix = "ctrl+t"` that is
 `ctrl+t` then `space`. A small popup appears with a map of the tab's panes and
 one row of keys, and nothing else:
 
-```
-┌ NORMAL ───────────────────────────┐
-│ +---------------------+---------+ │
-│ |                     |         | │
-│ |                     |    1    | │
-│ |                     |         | │  ← the panes of the tab you
-│ |          0          +---------+ │    are in, scaled down and
-│ |                     |    2    | │    numbered
-│ |                     |         | │
-│ +---------------------+---------+ │
-│ j/k row  h/l tab  0-9 pane  i exit│  ← keys bright, what they do dim
-└───────────────────────────────────┘
-```
+![The popup: a map of the tab's three panes, numbered 0 to 2, above one row of keys](docs/popup.png)
 
 That the mode is on is said by the popup's own title, so nothing inside it has
-to say so.
+to say so. The keys are drawn the way herdr draws its own prefix bar — each key
+bright against a dim description.
 
 The map is the pane layout of the tab the cursor is in, scaled into the popup.
 Press a digit and the focus jumps to that pane, the way `display-panes` works
