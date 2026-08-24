@@ -42,8 +42,22 @@ herdr server reload-config
 ## Usage
 
 Press `prefix+space` to enter normal mode — with `prefix = "ctrl+t"` that is
-`ctrl+t` then `space`. A small popup appears showing `-- NORMAL --`, the row
-you are on, and your position in the list.
+`ctrl+t` then `space`. A small popup appears with the mode and the keys, and
+nothing else:
+
+```
+┌ Normal Mode ──────────┐
+│ NORMAL                │   ← reverse video, like herdr's own PREFIX chip
+│ j/k move  i exit      │   ← keys bright, what they do dim
+└───────────────────────┘
+```
+
+Two rows because two rows is the floor: herdr cannot draw the frame around a
+popup any shorter, so the second one may as well carry the keys.
+
+The popup says nothing about which row you are on. It does not have to: every
+move shifts herdr's own focus, so the sidebar highlights the current row and
+the pane behind the popup is the one you are on.
 
 - `j` moves down, `k` moves up; both wrap around at the ends
 - Focus follows the cursor immediately — the pane behind the popup changes as
@@ -55,6 +69,11 @@ you are on, and your position in the list.
 The list is read once when the mode opens and is not refreshed while it is
 open, so a space or agent that appears in the meantime shows up the next time
 you enter.
+
+There is no error line. If herdr does not answer, or the terminal refuses to
+give up raw mode, the popup simply closes again — the failure would have to be
+reported on the very thing that failed, and it goes away with the popup either
+way.
 
 ## Local development
 

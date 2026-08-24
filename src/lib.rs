@@ -1,16 +1,51 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use serde::Deserialize;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub mod herdr;
 
-const MODE_TAG: &str = "-- NORMAL --";
+/// A run of text on a row, with the SGR parameter herdr's own prefix bar would
+/// draw it with: `7` reverse video for the mode chip, `1` bright for a key, `2`
+/// dim for what the key does. Spacing lives inside the dim spans, where it is
+/// invisible either way.
+struct Span {
+    sgr: &'static str,
+    text: &'static str,
+}
+
+/// The first row: that the mode is on, as a chip like herdr's own `PREFIX`.
+const MODE_ROW: &[Span] = &[Span { sgr: "7", text: " NORMAL " }];
+
+/// The second row: the keys and what they do. Which row the cursor is on is
+/// deliberately absent — the sidebar highlights it already, because every move
+/// really moves herdr's focus.
+const KEYS_ROW: &[Span] = &[
+    Span { sgr: "1", text: "j/k" },
+    Span { sgr: "2", text: " move  " },
+    Span { sgr: "1", text: "i" },
+    Span { sgr: "2", text: " exit" },
+];
+
+/// Each span in its own SGR, reset after every one of them: an escape left open
+/// would tint whatever herdr draws next.
+fn render_row(spans: &[Span]) -> String {
+    spans
+        .iter()
+        .map(|span| format!("\x1b[{}m{}\x1b[0m", span.sgr, span.text))
+        .collect()
+}
+
+pub fn mode_row() -> String {
+    render_row(MODE_ROW)
+}
+
+pub fn keys_row() -> String {
+    render_row(KEYS_ROW)
+}
 
 /// A workspace as the sidebar shows it, in the order `workspace list` returns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
     pub workspace_id: String,
-    pub label: String,
 }
 
 /// An agent pane as the sidebar shows it, in the order `agent list` returns.
@@ -19,14 +54,13 @@ pub struct Workspace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agent {
     pub pane_id: String,
-    pub label: String,
 }
 
 /// One selectable sidebar line. Spaces come first, then agents.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
-    Space { workspace_id: String, label: String },
-    Agent { pane_id: String, label: String },
+    Space { workspace_id: String },
+    Agent { pane_id: String },
 }
 
 /// What a keystroke means. Deliberately free of side effects: the caller owns
@@ -36,14 +70,6 @@ pub enum Action {
     Move(isize),
     Quit,
     Ignore,
-}
-
-impl Row {
-    pub fn label(&self) -> &str {
-        match self {
-            Row::Space { label, .. } | Row::Agent { label, .. } => label,
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -78,10 +104,6 @@ struct WorkspaceListResult {
 struct RawWorkspace {
     #[serde(default)]
     workspace_id: Option<String>,
-    #[serde(default)]
-    label: Option<String>,
-    #[serde(default)]
-    number: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -90,34 +112,19 @@ struct AgentListResult {
     agents: Vec<RawAgent>,
 }
 
-/// Only `pane_id` is required. Everything else is missing on at least one of
-/// the agents a real `herdr agent list` returns.
+/// The pane id is the only field we read. It is also the only one every agent
+/// in a real `herdr agent list` carries — the rest of the shape varies per
+/// agent, which is exactly why nothing else is relied on.
 #[derive(Deserialize)]
 struct RawAgent {
     #[serde(default)]
     pane_id: Option<String>,
-    #[serde(default)]
-    terminal_title_stripped: Option<String>,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    agent: Option<String>,
 }
 
 /// A present-but-blank field carries no more information than a missing one,
 /// so both collapse to `None`.
 fn non_blank(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
-}
-
-/// Pick the first candidate that is present and not blank.
-fn first_non_empty(candidates: &[Option<&str>], fallback: &str) -> String {
-    candidates
-        .iter()
-        .copied()
-        .find_map(non_blank)
-        .unwrap_or(fallback)
-        .to_string()
 }
 
 /// Work out where the focus was just before the popup took it.
@@ -150,12 +157,8 @@ pub fn parse_workspace_list(json: &str) -> Vec<Workspace> {
         .workspaces
         .into_iter()
         .filter_map(|raw| {
-            let workspace_id = raw.workspace_id?;
-            let number = raw.number.map(|n| n.to_string());
-            let label = first_non_empty(&[raw.label.as_deref(), number.as_deref()], &workspace_id);
             Some(Workspace {
-                workspace_id,
-                label,
+                workspace_id: raw.workspace_id?,
             })
         })
         .collect()
@@ -170,16 +173,9 @@ pub fn parse_agent_list(json: &str) -> Vec<Agent> {
         .agents
         .into_iter()
         .filter_map(|raw| {
-            let pane_id = raw.pane_id?;
-            let label = first_non_empty(
-                &[
-                    raw.terminal_title_stripped.as_deref(),
-                    raw.name.as_deref(),
-                    raw.agent.as_deref(),
-                ],
-                &pane_id,
-            );
-            Some(Agent { pane_id, label })
+            Some(Agent {
+                pane_id: raw.pane_id?,
+            })
         })
         .collect()
 }
@@ -189,14 +185,12 @@ pub fn parse_agent_list(json: &str) -> Vec<Agent> {
 pub fn build_rows(workspaces: &[Workspace], agents: &[Agent], own_pane_id: Option<&str>) -> Vec<Row> {
     let spaces = workspaces.iter().map(|workspace| Row::Space {
         workspace_id: workspace.workspace_id.clone(),
-        label: workspace.label.clone(),
     });
     let agents = agents
         .iter()
         .filter(|agent| Some(agent.pane_id.as_str()) != own_pane_id)
         .map(|agent| Row::Agent {
             pane_id: agent.pane_id.clone(),
-            label: agent.label.clone(),
         });
     spaces.chain(agents).collect()
 }
@@ -252,57 +246,6 @@ pub fn handle_key(event: &KeyEvent) -> Action {
     }
 }
 
-/// Cut a string down to `max` display columns, marking the cut with an
-/// ellipsis. Counting columns rather than bytes keeps CJK titles from either
-/// overflowing the popup or splitting a character.
-fn truncate_to_width(text: &str, max: usize) -> String {
-    if text.width() <= max {
-        return text.to_string();
-    }
-    if max == 0 {
-        return String::new();
-    }
-    let budget = max - 1;
-    let mut out = String::new();
-    let mut used = 0;
-    for ch in text.chars() {
-        let width = ch.width().unwrap_or(0);
-        if used + width > budget {
-            break;
-        }
-        out.push(ch);
-        used += width;
-    }
-    out.push('…');
-    out
-}
-
-/// A one-line message in place of the list. herdr tears the popup down the
-/// moment the process exits, so anything written to stderr is gone before it
-/// can be read — the only place a failure can be reported is here.
-pub fn render_notice(message: &str, width: usize) -> String {
-    let fixed = MODE_TAG.width() + 2;
-    if fixed >= width {
-        return truncate_to_width(MODE_TAG, width);
-    }
-    format!("{MODE_TAG}  {}", truncate_to_width(message, width - fixed))
-}
-
-pub fn render_line(rows: &[Row], cursor: usize, width: usize) -> String {
-    if rows.is_empty() {
-        return truncate_to_width(MODE_TAG, width);
-    }
-    let index = cursor.min(rows.len() - 1);
-    let position = format!("{}/{}", index + 1, rows.len());
-    // Two spaces separate the three parts.
-    let fixed = MODE_TAG.width() + position.width() + 2;
-    if fixed >= width {
-        return truncate_to_width(MODE_TAG, width);
-    }
-    let label = truncate_to_width(rows[index].label(), width - fixed);
-    format!("{MODE_TAG} {label} {position}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,9 +264,10 @@ mod tests {
         }
     }"#;
 
-    /// Trimmed from a real `herdr agent list` response. The second agent is the
-    /// only one carrying `name`, and the third has no `name` at all — the shape
-    /// really does vary per agent.
+    /// Trimmed from a real `herdr agent list` response. Every field but
+    /// `pane_id` is left in to keep the fixture honest about how much of this
+    /// the parser walks past: the second agent is the only one carrying `name`,
+    /// and the third has none at all.
     const AGENT_LIST_JSON: &str = r#"{
         "id": "cli:agent:list",
         "result": {
@@ -345,17 +289,15 @@ mod tests {
         }
     }
 
-    fn space(id: &str, label: &str) -> Row {
+    fn space(id: &str) -> Row {
         Row::Space {
             workspace_id: id.into(),
-            label: label.into(),
         }
     }
 
-    fn agent_row(id: &str, label: &str) -> Row {
+    fn agent_row(id: &str) -> Row {
         Row::Agent {
             pane_id: id.into(),
-            label: label.into(),
         }
     }
 
@@ -381,54 +323,25 @@ mod tests {
         assert_eq!(
             workspaces,
             vec![
-                Workspace { workspace_id: "w7".into(), label: "tools".into() },
-                Workspace { workspace_id: "w9".into(), label: "work".into() },
-                Workspace { workspace_id: "wB".into(), label: "personal".into() },
+                Workspace { workspace_id: "w7".into() },
+                Workspace { workspace_id: "w9".into() },
+                Workspace { workspace_id: "wB".into() },
             ]
         );
     }
 
     #[test]
-    fn workspace_without_label_falls_back_to_number_then_id() {
-        let json = r#"{"result":{"workspaces":[
-            {"workspace_id":"w1","number":4},
-            {"workspace_id":"w2"}
-        ]}}"#;
-
-        let workspaces = parse_workspace_list(json);
-
-        assert_eq!(workspaces[0].label, "4");
-        assert_eq!(workspaces[1].label, "w2");
-    }
-
-    #[test]
-    fn parses_agents_in_cli_order_with_title_preferred() {
+    fn parses_agents_in_cli_order() {
         let agents = parse_agent_list(AGENT_LIST_JSON);
 
-        assert_eq!(agents.len(), 3);
-        assert_eq!(agents[0].pane_id, "w9:p9P");
-        assert_eq!(agents[0].label, "各種タスクのスケジュール調整");
-        // `name` is present here but the stripped title still wins.
-        assert_eq!(agents[1].label, "fix-login-redirect");
-        assert_eq!(agents[2].pane_id, "wB:p2");
-    }
-
-    #[test]
-    fn agent_label_falls_back_through_name_agent_and_pane_id() {
-        let json = r#"{"result":{"agents":[
-            {"pane_id":"w1:p1","workspace_id":"w1","name":"builder","agent":"claude"},
-            {"pane_id":"w1:p2","workspace_id":"w1","agent":"codex"},
-            {"pane_id":"w1:p3","workspace_id":"w1"},
-            {"pane_id":"w1:p4","workspace_id":"w1","terminal_title_stripped":""}
-        ]}}"#;
-
-        let agents = parse_agent_list(json);
-
-        assert_eq!(agents[0].label, "builder");
-        assert_eq!(agents[1].label, "codex");
-        assert_eq!(agents[2].label, "w1:p3");
-        // An empty title is as useless as a missing one.
-        assert_eq!(agents[3].label, "w1:p4");
+        assert_eq!(
+            agents,
+            vec![
+                Agent { pane_id: "w9:p9P".into() },
+                Agent { pane_id: "w9:pEV".into() },
+                Agent { pane_id: "wB:p2".into() },
+            ]
+        );
     }
 
     #[test]
@@ -448,8 +361,7 @@ mod tests {
 
         let agents = parse_agent_list(json);
 
-        assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0].label, "real");
+        assert_eq!(agents, vec![Agent { pane_id: "w1:p1".into() }]);
     }
 
     #[test]
@@ -461,8 +373,7 @@ mod tests {
 
         let workspaces = parse_workspace_list(json);
 
-        assert_eq!(workspaces.len(), 1);
-        assert_eq!(workspaces[0].label, "real");
+        assert_eq!(workspaces, vec![Workspace { workspace_id: "w1".into() }]);
     }
 
     #[test]
@@ -553,12 +464,12 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                space("w7", "tools"),
-                space("w9", "work"),
-                space("wB", "personal"),
-                agent_row("w9:p9P", "各種タスクのスケジュール調整"),
-                agent_row("w9:pEV", "fix-login-redirect"),
-                agent_row("wB:p2", "vim-normal"),
+                space("w7"),
+                space("w9"),
+                space("wB"),
+                agent_row("w9:p9P"),
+                agent_row("w9:pEV"),
+                agent_row("wB:p2"),
             ]
         );
     }
@@ -571,7 +482,7 @@ mod tests {
         let rows = build_rows(&workspaces, &agents, Some("w9:pEV"));
 
         assert_eq!(rows.len(), 5);
-        assert!(!rows.contains(&agent_row("w9:pEV", "fix-login-redirect")));
+        assert!(!rows.contains(&agent_row("w9:pEV")));
     }
 
     #[test]
@@ -581,7 +492,7 @@ mod tests {
         let rows = build_rows(&workspaces, &[], None);
 
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0], space("w7", "tools"));
+        assert_eq!(rows[0], space("w7"));
     }
 
     #[test]
@@ -670,65 +581,48 @@ mod tests {
         }
     }
 
+    /// The popup says two things and no more: that the mode is on, and how to
+    /// work it. Which row the cursor is on is not among them — the sidebar
+    /// highlights that itself, since every move really does shift the focus.
     #[test]
-    fn rendered_line_names_the_mode_the_row_and_the_position() {
-        let rows = space_rows();
+    fn the_rows_name_the_mode_and_the_keys() {
+        let mode = mode_row();
+        let keys = keys_row();
 
-        let line = render_line(&rows, 1, 40);
-
-        assert!(line.starts_with("-- NORMAL --"), "{line}");
-        assert!(line.contains("work"), "{line}");
-        assert!(line.contains("2/3"), "{line}");
-    }
-
-    #[test]
-    fn rendered_line_fits_the_popup_even_with_wide_characters() {
-        let rows = full_rows();
-
-        for width in [10, 20, 26, 40] {
-            for cursor in 0..rows.len() {
-                let line = render_line(&rows, cursor, width);
-                assert!(
-                    line.width() <= width,
-                    "width {width} cursor {cursor}: {line:?} is {} columns",
-                    line.width()
-                );
-            }
+        assert!(mode.contains("NORMAL"), "{mode:?}");
+        for part in ["j/k", "move", "i", "exit"] {
+            assert!(keys.contains(part), "{part} missing from {keys:?}");
         }
     }
 
+    /// The rows go to the pane as they stand, with no fitting done at runtime,
+    /// so they have to fit the popup the manifest asks for. Measured: herdr
+    /// hands a popup its outer width less three columns, so the 24 in the
+    /// manifest leaves 21. A longer row would wrap, and the wrap would push the
+    /// other row out of the two the popup has.
+    ///
+    /// Being ASCII is what lets the row be measured in bytes: a wide character
+    /// would take two columns while counting as more bytes still.
     #[test]
-    fn a_notice_carries_the_mode_tag_and_the_message() {
-        let line = render_notice("no rows", 40);
+    fn the_rows_fit_the_popup_the_manifest_asks_for() {
+        for spans in [MODE_ROW, KEYS_ROW] {
+            let text: String = spans.iter().map(|span| span.text).collect();
 
-        assert!(line.starts_with("-- NORMAL --"), "{line}");
-        assert!(line.contains("no rows"), "{line}");
+            assert!(text.is_ascii(), "{text:?}");
+            assert!(text.len() <= 21, "{text:?} is {} columns", text.len());
+        }
     }
 
+    /// An SGR left open would carry into whatever herdr draws after the popup.
     #[test]
-    fn a_notice_fits_the_popup() {
-        for width in [8, 12, 20, 37, 40] {
-            let line = render_notice("herdr did not answer 各種タスク", width);
-
-            assert!(
-                line.width() <= width,
-                "width {width}: {line:?} is {} columns",
-                line.width()
+    fn every_span_closes_the_style_it_opened() {
+        for row in [mode_row(), keys_row()] {
+            assert!(row.ends_with("\x1b[0m"), "{row:?}");
+            assert_eq!(
+                row.matches("\x1b[0m").count(),
+                row.matches("\x1b[").count() / 2,
+                "unbalanced escapes in {row:?}"
             );
         }
-    }
-
-    #[test]
-    fn rendering_an_empty_list_does_not_panic() {
-        assert!(render_line(&[], 0, 40).contains("NORMAL"));
-    }
-
-    #[test]
-    fn rendering_an_out_of_range_cursor_does_not_panic() {
-        let rows = space_rows();
-
-        let line = render_line(&rows, 99, 40);
-
-        assert!(line.starts_with("-- NORMAL --"), "{line}");
     }
 }

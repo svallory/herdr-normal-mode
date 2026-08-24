@@ -15,6 +15,13 @@ title = "Normal Mode"
 # else (overlay, zoomed) gets pushed behind the pane we just focused and stops
 # receiving input. Only a session-modal popup survives.
 placement = "popup"
-width = 40
+# Outer size in terminal cells, border included. Measured: the pane comes back
+# with the outer width less three columns, and 3 here gives it two rows.
+#
+# 3 is also the floor. At 2 the pane still comes back with two rows, but herdr
+# no longer has the room to draw the frame around them and the border comes out
+# broken — so a one-row popup is not on offer, and both rows are used instead.
+# The width is then just enough for the wider of the two rows.
+width = 24
 height = 3
 command = ["sh", "-c", "${HERDR_PLUGIN_ROOT}/target/release/herdr-normal-mode"]

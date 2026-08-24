@@ -12,15 +12,9 @@ use crossterm::terminal;
 
 use herdr_normal_mode::herdr::{fetch_lists, focus_row, herdr_bin};
 use herdr_normal_mode::{
-    Action, Row, build_rows, handle_key, initial_cursor, move_cursor, render_line, render_notice,
+    Action, Row, build_rows, handle_key, initial_cursor, keys_row, mode_row, move_cursor,
     resolve_active_ids,
 };
-
-/// Last resort when the terminal will not say how wide it is. The manifest's
-/// `width = 40` is the *outer* popup size — herdr spends two columns on the
-/// border and one more inside it — so the pane itself is 37 columns. Writing
-/// 40 here would wrap the line and push the mode row off the popup.
-const FALLBACK_WIDTH: usize = 37;
 
 fn main() {
     let herdr = herdr_bin();
@@ -35,23 +29,22 @@ fn main() {
     let (workspaces, agents) = fetch_lists(&herdr);
     let rows = build_rows(&workspaces, &agents, own_pane_id.as_deref());
 
-    let result = if rows.is_empty() {
-        // Nothing to walk: either herdr has no workspaces, or it never
-        // answered. Say so instead of flashing the popup shut.
-        notice("nothing to move through")
-    } else {
-        let start =
-            initial_cursor(&rows, active_pane_id.as_deref(), active_workspace_id.as_deref());
-        // Bind the result before tearing down, so no `?` can skip past the
-        // restore and strand the terminal in raw mode.
-        run(&herdr, &rows, start)
-    };
-    let _ = restore();
-
-    if let Err(err) = result {
-        let _ = notice(&format!("failed: {err}"));
-        let _ = restore();
+    // Nothing to walk means herdr answered with no workspaces at all, which it
+    // cannot do while we are running inside one of them. Close again rather
+    // than carry a reporting path for it.
+    if rows.is_empty() {
+        return;
     }
+
+    let start = initial_cursor(&rows, active_pane_id.as_deref(), active_workspace_id.as_deref());
+    // Nothing is done with a failure. Every error `run` can return comes from
+    // the terminal itself, which is the only place a report could go, and herdr
+    // tears the popup down the moment we exit — so there is nowhere to say it
+    // and nothing the user could do about it. Dropping it here is also what
+    // keeps a `?` inside `run` from skipping the restore below and stranding
+    // the terminal in raw mode.
+    let _ = run(&herdr, &rows, start);
+    let _ = restore();
 }
 
 fn run(herdr: &str, rows: &[Row], start: Option<usize>) -> io::Result<()> {
@@ -61,7 +54,10 @@ fn run(herdr: &str, rows: &[Row], start: Option<usize>) -> io::Result<()> {
     print!("\x1b[?25l\x1b[2J\x1b[H");
 
     let mut cursor = start.unwrap_or(0);
-    draw(rows, cursor)?;
+    // Written once and then left alone: the rows say the mode is on and how to
+    // work it, neither of which a keystroke changes. Where the cursor is shows
+    // in the sidebar, which the focus below moves for us.
+    write_rows()?;
 
     // The row herdr is focused on, as far as we know. `None` when the cursor
     // started somewhere we could not match, so the first settle really sends a
@@ -87,10 +83,9 @@ fn run(herdr: &str, rows: &[Row], start: Option<usize>) -> io::Result<()> {
         match event::read()? {
             Event::Key(key) => match handle_key(&key) {
                 Action::Move(delta) => {
-                    cursor = move_cursor(cursor, rows.len(), delta);
                     // The cursor tracks the keystroke without waiting on
                     // herdr; the focus catches up at the settle above.
-                    draw(rows, cursor)?;
+                    cursor = move_cursor(cursor, rows.len(), delta);
                 }
                 Action::Quit => {
                     // A burst that ended in a quit never reached the settle
@@ -102,7 +97,9 @@ fn run(herdr: &str, rows: &[Row], start: Option<usize>) -> io::Result<()> {
                 }
                 Action::Ignore => {}
             },
-            Event::Resize(..) => draw(rows, cursor)?,
+            // A resize can clear the pane out from under us, so put the rows
+            // back.
+            Event::Resize(..) => write_rows()?,
             _ => {}
         }
     }
@@ -110,31 +107,17 @@ fn run(herdr: &str, rows: &[Row], start: Option<usize>) -> io::Result<()> {
     Ok(())
 }
 
-/// Ask the pane how wide it is rather than trusting the manifest, which
-/// measures the popup from the outside of its border.
-fn viewport_width() -> usize {
-    terminal::size()
-        .map(|(cols, _)| cols as usize)
-        .unwrap_or(FALLBACK_WIDTH)
-}
-
-fn draw(rows: &[Row], cursor: usize) -> io::Result<()> {
-    write_line(&render_line(rows, cursor, viewport_width()))
-}
-
-/// Put a message on the popup's one line and hold it there until a keystroke.
-/// The popup dies with this process, so there is nowhere else to report to.
-fn notice(message: &str) -> io::Result<()> {
-    terminal::enable_raw_mode()?;
-    print!("\x1b[?25l\x1b[2J\x1b[H");
-    write_line(&render_notice(message, viewport_width()))?;
-    let _ = event::read();
-    Ok(())
-}
-
-fn write_line(line: &str) -> io::Result<()> {
+/// Both rows, each placed by absolute position. A newline would do instead, but
+/// only until the pane is exactly as tall as what we draw — then the last one
+/// scrolls the first row away.
+fn write_rows() -> io::Result<()> {
     let mut stdout = io::stdout();
-    write!(stdout, "\x1b[H\x1b[2K{line}")?;
+    write!(
+        stdout,
+        "\x1b[1;1H\x1b[2K{}\x1b[2;1H\x1b[2K{}",
+        mode_row(),
+        keys_row()
+    )?;
     stdout.flush()
 }
 
