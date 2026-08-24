@@ -2,7 +2,7 @@ id = "maedana.normal-mode"
 name = "Normal Mode"
 version = "0.1.0"
 min_herdr_version = "0.7.0"
-description = "Vim-style normal mode to move the herdr sidebar with j/k"
+description = "Vim-style normal mode for the herdr sidebar: j/k rows, h/l tabs, 0-9 panes"
 platforms = ["linux", "macos"]
 
 [[build]]
