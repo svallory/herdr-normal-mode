@@ -38,7 +38,7 @@ Add to `~/.config/herdr/config.toml`:
 [[keys.command]]
 key = "prefix+space"
 type = "shell"
-command = "herdr plugin pane open --plugin svallory.navigation-mode --entrypoint navigate"
+command = "herdr plugin pane open --plugin navigation-mode --entrypoint navigate"
 description = "navigation mode"
 ```
 

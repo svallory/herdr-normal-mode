@@ -13,7 +13,7 @@ use crossterm::terminal;
 
 use herdr_navigation_mode::herdr::Herdr;
 use herdr_navigation_mode::{
-    Action, Layout, POPUP_HEIGHT, POPUP_WIDTH, PaneRef, Row, Tabs, build_rows, handle_key,
+    Action, Layout, PADDING, POPUP_HEIGHT, POPUP_WIDTH, PaneRef, Row, Tabs, build_rows, handle_key,
     initial_cursor, move_cursor, pane_at, pane_in_tab, popup_rows, resolve_active_ids, row_by_key,
 };
 
@@ -201,11 +201,19 @@ fn settle_map(
 fn draw(layout: &Option<Layout>) -> io::Result<()> {
     let (width, height) = viewport();
     let mut stdout = io::stdout();
-    for (index, row) in popup_rows(layout.as_ref(), width, height)
+    // The content sits PADDING cells in from every edge of the pane. Rows are
+    // cleared whole and then written from the padded column, so the margin
+    // stays blank.
+    let content_width = width.saturating_sub(2 * PADDING);
+    let content_height = height.saturating_sub(2 * PADDING);
+    for row in 1..=height {
+        write!(stdout, "\x1b[{row};1H\x1b[2K")?;
+    }
+    for (index, row) in popup_rows(layout.as_ref(), content_width, content_height)
         .iter()
         .enumerate()
     {
-        write!(stdout, "\x1b[{};1H\x1b[2K{row}", index + 1)?;
+        write!(stdout, "\x1b[{};{}H{row}", index + 1 + PADDING, 1 + PADDING)?;
     }
     stdout.flush()
 }
@@ -215,7 +223,7 @@ fn draw(layout: &Option<Layout>) -> io::Result<()> {
 fn viewport() -> (usize, usize) {
     terminal::size()
         .map(|(columns, rows)| (columns as usize, rows as usize))
-        .unwrap_or((POPUP_WIDTH, POPUP_HEIGHT))
+        .unwrap_or((POPUP_WIDTH + 2 * PADDING, POPUP_HEIGHT + 2 * PADDING))
 }
 
 fn restore() -> io::Result<()> {
