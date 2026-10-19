@@ -11,17 +11,19 @@ command = ["cargo", "build", "--release"]
 [[panes]]
 id = "navigate"
 # The popup's own frame says the mode is on, so nothing inside it has to.
-# Lowercase, with a space either side so it does not touch the frame.
-title = " navigation "
+# Lowercase, with a blank cell either side so it does not touch the frame.
+# The blanks are U+2800 braille blanks: herdr trims ordinary whitespace off a
+# plugin title, and a no-break or en space counts as whitespace too.
+title = "⠀navigation⠀"
 # popup is not a preference: this pane moves the focus itself, so anything
 # else (overlay, zoomed) gets pushed behind the pane we just focused and stops
 # receiving input. Only a session-modal popup survives.
 placement = "popup"
 # Outer size in terminal cells, border included. Measured: the pane comes back
 # with the outer width less three columns and the outer height less two rows,
-# never fewer than two rows, then one blank cell of padding off every side. So
-# this is 35 columns by 9 rows of content — eight rows of pane map and one row of
-# keys.
+# never fewer than two rows, then two blank columns and one blank row of padding
+# off every side. So this is 36 columns by 9 rows of content — eight rows of pane
+# map and one row of keys.
 #
 # The height is only ever a request. The pane is asked how big it turned out to
 # be and the rows are laid out against that, because a popup a row shorter than
@@ -30,6 +32,6 @@ placement = "popup"
 # It cannot change while the popup is open either: herdr sizes a popup when it
 # opens one and offers no way to resize it. The map therefore fills the same box
 # whether the tab holds one pane or nine.
-width = 40
+width = 43
 height = 13
 command = ["sh", "-c", "${HERDR_PLUGIN_ROOT}/target/release/herdr-navigation-mode"]

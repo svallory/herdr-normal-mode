@@ -81,7 +81,7 @@ focused pane's own border says which one it is.
 - Focus follows the cursor immediately — the pane behind the popup changes as
   you move
 - The cursor starts on whatever had focus when you entered the mode
-- `i` or `Enter` leaves the mode (`Ctrl+C` also works), and the focus stays
+- `Esc` or `Enter` leaves the mode (`Ctrl+C` also works), and the focus stays
   wherever you left it
 
 `h` and `l` walk the tabs of whichever workspace the cursor is in — its own

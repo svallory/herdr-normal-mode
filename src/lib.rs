@@ -22,21 +22,23 @@ const KEYS_ROW: &[Span] = &[
     Span { sgr: "2", text: " tab  " },
     Span { sgr: "1", text: "0-9" },
     Span { sgr: "2", text: " pane  " },
-    Span { sgr: "1", text: "i" },
+    Span { sgr: "1", text: "esc" },
     Span { sgr: "2", text: " exit" },
 ];
 
 /// The content the popup in the manifest works out to: herdr hands a popup its
 /// outer width less three columns, and its outer height less two rows, and the
-/// padding takes [`PADDING`] more from each side.
+/// padding takes [`PADDING_X`] and [`PADDING_Y`] more from each side.
 ///
 /// The keys row is held against the width by a test. Neither is used to lay the
 /// rows out — the pane is asked how big it really is for that — so these are
 /// only what to assume for a pane that will not answer.
-pub const POPUP_WIDTH: usize = 35;
-/// Blank cells between the popup's frame and the content, on every side. The
+pub const POPUP_WIDTH: usize = 36;
+/// Blank columns between the popup's frame and the content, on each side. The
 /// frame is herdr's and cannot be removed, so the content keeps its distance.
-pub const PADDING: usize = 1;
+pub const PADDING_X: usize = 2;
+/// Blank rows above and below the content.
+pub const PADDING_Y: usize = 1;
 pub const POPUP_HEIGHT: usize = 9;
 
 /// Digits `0` to `9` is what the number row offers, and a tab with more panes
@@ -696,7 +698,7 @@ pub fn handle_key(event: &KeyEvent) -> Action {
         KeyCode::Char(digit) if bare && digit.is_ascii_digit() => {
             Action::Pane(digit as usize - '0' as usize)
         }
-        KeyCode::Char('i') | KeyCode::Enter if bare => Action::Quit,
+        KeyCode::Esc | KeyCode::Enter if bare => Action::Quit,
         _ => Action::Ignore,
     }
 }
@@ -1041,8 +1043,9 @@ mod tests {
     }
 
     #[test]
-    fn i_enter_and_ctrl_c_quit() {
-        assert_eq!(handle_key(&press(KeyCode::Char('i'), KeyModifiers::NONE)), Action::Quit);
+    fn esc_enter_and_ctrl_c_quit() {
+        assert_eq!(handle_key(&press(KeyCode::Esc, KeyModifiers::NONE)), Action::Quit);
+        assert_eq!(handle_key(&press(KeyCode::Char('i'), KeyModifiers::NONE)), Action::Ignore);
         assert_eq!(handle_key(&press(KeyCode::Enter, KeyModifiers::NONE)), Action::Quit);
         assert_eq!(handle_key(&press(KeyCode::Char('c'), KeyModifiers::CONTROL)), Action::Quit);
     }
@@ -1076,7 +1079,7 @@ mod tests {
     fn the_keys_row_names_every_key() {
         let keys = render_row(KEYS_ROW);
 
-        for part in ["j/k", "row", "h/l", "tab", "0-9", "pane", "i", "exit"] {
+        for part in ["j/k", "row", "h/l", "tab", "0-9", "pane", "esc", "exit"] {
             assert!(keys.contains(part), "{part} missing from {keys:?}");
         }
     }
