@@ -444,6 +444,29 @@ fn scale(offset: i64, span: i64, to: usize) -> usize {
     (((offset * last) + span / 2) / span).clamp(0, last) as usize
 }
 
+const UP: u8 = 1;
+const DOWN: u8 = 2;
+const LEFT: u8 = 4;
+const RIGHT: u8 = 8;
+
+/// The line-drawing glyph joining the neighbours in `mask`. Corners are
+/// rounded; junctions have no rounded form, so they stay square.
+fn line_glyph(mask: u8) -> char {
+    match mask {
+        m if m == DOWN | RIGHT => '╭',
+        m if m == DOWN | LEFT => '╮',
+        m if m == UP | RIGHT => '╰',
+        m if m == UP | LEFT => '╯',
+        m if m == UP | DOWN | RIGHT => '├',
+        m if m == UP | DOWN | LEFT => '┤',
+        m if m == DOWN | LEFT | RIGHT => '┬',
+        m if m == UP | LEFT | RIGHT => '┴',
+        m if m == UP | DOWN | LEFT | RIGHT => '┼',
+        m if m & (UP | DOWN) != 0 => '│',
+        _ => '─',
+    }
+}
+
 /// A scaled drawing of a tab's panes, one line per row, each pane a box with
 /// its digit in the middle.
 ///
@@ -477,15 +500,27 @@ pub fn render_map(layout: &Layout, width: usize, height: usize) -> Vec<String> {
         })
         .collect();
 
+    // Edges are collected as which neighbours each cell connects to, and the
+    // glyph is picked afterwards. Drawing glyphs directly would leave a shared
+    // edge with a corner where a junction belongs.
+    let mut links = vec![vec![0u8; width]; height];
     for &(x0, x1, y0, y1) in &corners {
-        grid[y0][x0..=x1].fill('-');
-        grid[y1][x0..=x1].fill('-');
-        for row in &mut grid[y0..=y1] {
-            row[x0] = '|';
-            row[x1] = '|';
+        for y in [y0, y1] {
+            for x in x0..=x1 {
+                links[y][x] |= (if x > x0 { LEFT } else { 0 }) | (if x < x1 { RIGHT } else { 0 });
+            }
         }
-        for (y, x) in [(y0, x0), (y0, x1), (y1, x0), (y1, x1)] {
-            grid[y][x] = '+';
+        for x in [x0, x1] {
+            for y in y0..=y1 {
+                links[y][x] |= (if y > y0 { UP } else { 0 }) | (if y < y1 { DOWN } else { 0 });
+            }
+        }
+    }
+    for (y, row) in links.iter().enumerate() {
+        for (x, &mask) in row.iter().enumerate() {
+            if mask != 0 {
+                grid[y][x] = line_glyph(mask);
+            }
         }
     }
 
@@ -708,7 +743,7 @@ mod tests {
                 {"agent_status":"idle","focused":false,"label":"torudo/main","number":82,"pane_count":3,"tab_id":"w9:t2J","workspace_id":"w9"},
                 {"agent_status":"working","focused":false,"label":"jfa-apps/remove-list","number":156,"pane_count":1,"tab_id":"w9:t4W","workspace_id":"w9"},
                 {"agent_status":"working","focused":false,"label":"ga-pms/bv/table","number":158,"pane_count":1,"tab_id":"w9:t4Y","workspace_id":"w9"},
-                {"agent_status":"working","focused":true,"label":"herdr-normal-mode/main","number":6,"pane_count":1,"tab_id":"wB:t2","workspace_id":"wB"}
+                {"agent_status":"working","focused":true,"label":"herdr-navigation-mode/main","number":6,"pane_count":1,"tab_id":"wB:t2","workspace_id":"wB"}
             ]
         }
     }"#;
@@ -1285,15 +1320,35 @@ mod tests {
         assert_eq!(
             map,
             vec![
-                "+-----------+-----------+",
-                "|           |           |",
-                "|           |           |",
-                "|     0     |     1     |",
-                "|           |           |",
-                "|           |           |",
-                "|           |           |",
-                "+-----------+-----------+",
+                "╭───────────┬───────────╮",
+                "│           │           │",
+                "│           │           │",
+                "│     0     │     1     │",
+                "│           │           │",
+                "│           │           │",
+                "│           │           │",
+                "╰───────────┴───────────╯",
             ]
+        );
+    }
+
+    #[test]
+    fn a_pane_meeting_a_shared_edge_makes_a_junction() {
+        let pane = |id: &str, x, y, width, height| LayoutPane {
+            pane_id: id.into(),
+            rect: Rect { x, y, width, height },
+        };
+        let layout = Layout {
+            tab_id: "w1:t1".into(),
+            area: Rect { x: 0, y: 0, width: 20, height: 8 },
+            panes: vec![pane("a", 0, 0, 10, 8), pane("b", 10, 0, 10, 4), pane("c", 10, 4, 10, 4)],
+        };
+
+        let map = render_map(&layout, 9, 5);
+
+        assert_eq!(
+            map,
+            vec!["╭───┬───╮", "│   │ 1 │", "│ 0 ├───┤", "│   │ 2 │", "╰───┴───╯"]
         );
     }
 
@@ -1301,7 +1356,7 @@ mod tests {
     fn one_pane_fills_the_whole_map() {
         let map = render_map(&one_pane_layout(), 9, 4);
 
-        assert_eq!(map, vec!["+-------+", "|   0   |", "|       |", "+-------+"]);
+        assert_eq!(map, vec!["╭───────╮", "│   0   │", "│       │", "╰───────╯"]);
     }
 
     /// Only ten panes can be reached from the number row, so only ten are

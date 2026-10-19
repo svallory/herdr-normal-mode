@@ -144,7 +144,7 @@ impl Herdr {
 n=0
 while [ "$n" -lt 40 ]; do
   "${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin "$HERDR_PLUGIN_ID" \
-    --entrypoint normal --env "HERDR_NORMAL_MODE_CURSOR=$HERDR_NORMAL_MODE_CURSOR" \
+    --entrypoint navigate --env "HERDR_NAVIGATION_MODE_CURSOR=$HERDR_NAVIGATION_MODE_CURSOR" \
     >/dev/null 2>&1 && exit 0
   n=$((n + 1))
   sleep 0.05
@@ -152,7 +152,7 @@ done"#;
         let mut helper = Command::new("sh");
         helper
             .args(["-c", SCRIPT])
-            .env("HERDR_NORMAL_MODE_CURSOR", cursor_key)
+            .env("HERDR_NAVIGATION_MODE_CURSOR", cursor_key)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());

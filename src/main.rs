@@ -1,4 +1,4 @@
-//! A vim-like normal mode for the herdr sidebar: `j` and `k` walk the spaces
+//! A vim-like navigation mode for the herdr sidebar: `j` and `k` walk the spaces
 //! and agents as one list, `h` and `l` walk the tabs of whichever workspace the
 //! cursor is in, `0`-`9` jump to a pane on the map, and herdr's focus follows.
 //!
@@ -11,8 +11,8 @@ use std::time::Duration;
 use crossterm::event::{self, Event};
 use crossterm::terminal;
 
-use herdr_normal_mode::herdr::Herdr;
-use herdr_normal_mode::{
+use herdr_navigation_mode::herdr::Herdr;
+use herdr_navigation_mode::{
     Action, Layout, POPUP_HEIGHT, POPUP_WIDTH, PaneRef, Row, Tabs, build_rows, handle_key,
     initial_cursor, move_cursor, pane_at, pane_in_tab, popup_rows, resolve_active_ids, row_by_key,
 };
@@ -52,7 +52,7 @@ fn main() {
     // A reopen names the row it left the cursor on. It wins over the focus,
     // which says only where the last move landed: focus on an agent would put
     // the cursor on the agent row even when it was walking the spaces.
-    let handed_over = std::env::var("HERDR_NORMAL_MODE_CURSOR")
+    let handed_over = std::env::var("HERDR_NAVIGATION_MODE_CURSOR")
         .ok()
         .and_then(|key| row_by_key(&rows, &key));
     let start = handed_over.or_else(|| {

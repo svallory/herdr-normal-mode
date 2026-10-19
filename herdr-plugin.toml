@@ -1,17 +1,17 @@
-id = "maedana.normal-mode"
-name = "Normal Mode"
+id = "svallory.navigation-mode"
+name = "Navigation Mode"
 version = "0.1.0"
 min_herdr_version = "0.7.0"
-description = "Vim-style normal mode for the herdr sidebar: j/k rows, h/l tabs, 0-9 panes"
+description = "Vim-style navigation mode for the herdr sidebar: j/k rows, h/l tabs, 0-9 panes"
 platforms = ["linux", "macos"]
 
 [[build]]
 command = ["cargo", "build", "--release"]
 
 [[panes]]
-id = "normal"
+id = "navigate"
 # The popup's own frame says the mode is on, so nothing inside it has to.
-title = "NORMAL"
+title = "NAVIGATION"
 # popup is not a preference: this pane moves the focus itself, so anything
 # else (overlay, zoomed) gets pushed behind the pane we just focused and stops
 # receiving input. Only a session-modal popup survives.
@@ -30,4 +30,4 @@ placement = "popup"
 # whether the tab holds one pane or nine.
 width = 38
 height = 11
-command = ["sh", "-c", "${HERDR_PLUGIN_ROOT}/target/release/herdr-normal-mode"]
+command = ["sh", "-c", "${HERDR_PLUGIN_ROOT}/target/release/herdr-navigation-mode"]

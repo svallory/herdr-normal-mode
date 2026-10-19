@@ -1,6 +1,6 @@
-# herdr-normal-mode
+# herdr-navigation-mode
 
-A vim-like normal mode for the [Herdr](https://herdr.dev) sidebar. Press a key
+A vim-like navigation mode for the [Herdr](https://herdr.dev) sidebar. Press a key
 to enter the mode, then walk the sidebar with `j` and `k`, the tabs with `h` and
 `l`, and jump to a pane by its number on a little map of the tab — every step
 moves Herdr's focus too, so you browse by looking at the panes themselves rather
@@ -27,7 +27,7 @@ instead of another `prefix+g`.
 Requires the Rust toolchain (`cargo`).
 
 ```bash
-herdr plugin install maedana/herdr-normal-mode
+herdr plugin install svallory/herdr-navigation-mode
 ```
 
 ## Keybinding
@@ -38,8 +38,8 @@ Add to `~/.config/herdr/config.toml`:
 [[keys.command]]
 key = "prefix+space"
 type = "shell"
-command = "herdr plugin pane open --plugin maedana.normal-mode --entrypoint normal"
-description = "normal mode"
+command = "herdr plugin pane open --plugin svallory.navigation-mode --entrypoint navigate"
+description = "navigation mode"
 ```
 
 `prefix+esc` is the binding you would reach for first, and `herdr config check`
@@ -55,7 +55,7 @@ herdr server reload-config
 
 ## Usage
 
-Press `prefix+space` to enter normal mode — with `prefix = "ctrl+t"` that is
+Press `prefix+space` to enter navigation mode — with `prefix = "ctrl+t"` that is
 `ctrl+t` then `space`. A small popup appears with a map of the tab's panes and
 one row of keys, and nothing else:
 
@@ -114,7 +114,7 @@ way.
 ## Local development
 
 ```bash
-herdr plugin link /path/to/herdr-normal-mode
+herdr plugin link /path/to/herdr-navigation-mode
 cargo test
 cargo build --release
 ```
