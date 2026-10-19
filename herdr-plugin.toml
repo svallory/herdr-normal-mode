@@ -2,7 +2,7 @@ id = "navigation-mode"
 name = "Navigation Mode"
 version = "0.1.0"
 min_herdr_version = "0.7.0"
-description = "Vim-style navigation mode for the herdr sidebar: j/k rows, h/l tabs, 0-9 panes"
+description = "Vim-style navigation mode for the herdr sidebar: j/k rows, h/l tabs, 1-9 panes"
 platforms = ["linux", "macos"]
 
 [[build]]
@@ -21,7 +21,7 @@ title = "⠀navigation⠀"
 placement = "popup"
 # Outer size in terminal cells, border included. Measured: the pane comes back
 # with the outer width less three columns and the outer height less two rows,
-# never fewer than two rows, then two blank columns and one blank row of padding
+# never fewer than two rows, then six blank columns and one blank row of padding
 # off every side. So this is 36 columns by 9 rows of content — eight rows of pane
 # map and one row of keys.
 #
@@ -32,6 +32,6 @@ placement = "popup"
 # It cannot change while the popup is open either: herdr sizes a popup when it
 # opens one and offers no way to resize it. The map therefore fills the same box
 # whether the tab holds one pane or nine.
-width = 43
+width = 51
 height = 13
 command = ["sh", "-c", "${HERDR_PLUGIN_ROOT}/target/release/herdr-navigation-mode"]

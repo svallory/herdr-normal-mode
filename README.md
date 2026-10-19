@@ -77,7 +77,7 @@ focused pane's own border says which one it is.
 
 - `j` moves down the sidebar, `k` moves up; both wrap around at the ends
 - `l` goes to the next tab, `h` to the previous one; these wrap too
-- `0` to `9` jump to that pane of the tab on the map
+- `1` to `9`, then `0` for the tenth, jump to that pane of the tab on the map
 - Focus follows the cursor immediately — the pane behind the popup changes as
   you move
 - The cursor starts on whatever had focus when you entered the mode

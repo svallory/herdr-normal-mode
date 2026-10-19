@@ -20,7 +20,7 @@ const KEYS_ROW: &[Span] = &[
     Span { sgr: "2", text: " row  " },
     Span { sgr: "1", text: "h/l" },
     Span { sgr: "2", text: " tab  " },
-    Span { sgr: "1", text: "0-9" },
+    Span { sgr: "1", text: "1-9" },
     Span { sgr: "2", text: " pane  " },
     Span { sgr: "1", text: "esc" },
     Span { sgr: "2", text: " exit" },
@@ -36,12 +36,12 @@ const KEYS_ROW: &[Span] = &[
 pub const POPUP_WIDTH: usize = 36;
 /// Blank columns between the popup's frame and the content, on each side. The
 /// frame is herdr's and cannot be removed, so the content keeps its distance.
-pub const PADDING_X: usize = 2;
+pub const PADDING_X: usize = 6;
 /// Blank rows above and below the content.
 pub const PADDING_Y: usize = 1;
 pub const POPUP_HEIGHT: usize = 9;
 
-/// Digits `0` to `9` is what the number row offers, and a tab with more panes
+/// Digits `1` to `9` and then `0` is what the number row offers, and a tab with more panes
 /// than that is not one anyone navigates by looking at a map. The rest are
 /// still drawn — leaving them out would make the shape a lie.
 const MAX_LABELLED: usize = 10;
@@ -532,7 +532,8 @@ pub fn render_map(layout: &Layout, width: usize, height: usize) -> Vec<String> {
 
     for (index, &(x0, x1, y0, y1)) in corners.iter().take(MAX_LABELLED).enumerate() {
         // `as u32` is safe for an index below ten, and so is the unwrap.
-        let digit = char::from_digit(index as u32, 10).unwrap_or('?');
+        // Panes are numbered from 1, with the tenth on 0 as on the keyboard.
+        let digit = char::from_digit(((index + 1) % 10) as u32, 10).unwrap_or('?');
         grid[(y0 + y1) / 2][(x0 + x1) / 2] = digit;
     }
 
@@ -696,7 +697,8 @@ pub fn handle_key(event: &KeyEvent) -> Action {
         KeyCode::Char('h') if bare => Action::Tab(-1),
         // The number row jumps straight to a pane on the map.
         KeyCode::Char(digit) if bare && digit.is_ascii_digit() => {
-            Action::Pane(digit as usize - '0' as usize)
+            // `1` is the first pane and `0` the tenth, as on the keyboard.
+            Action::Pane((digit as usize - '0' as usize + 9) % 10)
         }
         KeyCode::Esc | KeyCode::Enter if bare => Action::Quit,
         _ => Action::Ignore,
@@ -1079,7 +1081,7 @@ mod tests {
     fn the_keys_row_names_every_key() {
         let keys = render_row(KEYS_ROW);
 
-        for part in ["j/k", "row", "h/l", "tab", "0-9", "pane", "esc", "exit"] {
+        for part in ["j/k", "row", "h/l", "tab", "1-9", "pane", "esc", "exit"] {
             assert!(keys.contains(part), "{part} missing from {keys:?}");
         }
     }
@@ -1330,7 +1332,7 @@ mod tests {
                 "╭───────────┬───────────╮",
                 "│           │           │",
                 "│           │           │",
-                "│     0     │     1     │",
+                "│     1     │     2     │",
                 "│           │           │",
                 "│           │           │",
                 "│           │           │",
@@ -1355,7 +1357,7 @@ mod tests {
 
         assert_eq!(
             map,
-            vec!["╭───┬───╮", "│   │ 1 │", "│ 0 ├───┤", "│   │ 2 │", "╰───┴───╯"]
+            vec!["╭───┬───╮", "│   │ 2 │", "│ 1 ├───┤", "│   │ 3 │", "╰───┴───╯"]
         );
     }
 
@@ -1363,7 +1365,7 @@ mod tests {
     fn one_pane_fills_the_whole_map() {
         let map = render_map(&one_pane_layout(), 9, 4);
 
-        assert_eq!(map, vec!["╭───────╮", "│   0   │", "│       │", "╰───────╯"]);
+        assert_eq!(map, vec!["╭───────╮", "│   1   │", "│       │", "╰───────╯"]);
     }
 
     /// Only ten panes can be reached from the number row, so only ten are
@@ -1384,7 +1386,7 @@ mod tests {
 
         let map = render_map(&layout, 121, 5).join("\n");
 
-        for digit in '0'..='9' {
+        for digit in ['1','2','3','4','5','6','7','8','9','0'] {
             assert!(map.contains(digit), "{digit} missing from\n{map}");
         }
         assert_eq!(pane_at(&layout, 9), Some("w1:p9"));
@@ -1401,8 +1403,9 @@ mod tests {
 
     #[test]
     fn digits_jump_to_a_pane_only_without_modifiers() {
-        assert_eq!(handle_key(&press(KeyCode::Char('0'), KeyModifiers::NONE)), Action::Pane(0));
-        assert_eq!(handle_key(&press(KeyCode::Char('7'), KeyModifiers::NONE)), Action::Pane(7));
+        assert_eq!(handle_key(&press(KeyCode::Char('1'), KeyModifiers::NONE)), Action::Pane(0));
+        assert_eq!(handle_key(&press(KeyCode::Char('7'), KeyModifiers::NONE)), Action::Pane(6));
+        assert_eq!(handle_key(&press(KeyCode::Char('0'), KeyModifiers::NONE)), Action::Pane(9));
         assert_eq!(
             handle_key(&press(KeyCode::Char('7'), KeyModifiers::CONTROL)),
             Action::Ignore
@@ -1467,7 +1470,7 @@ mod tests {
         let rows = popup_rows(Some(&layout), POPUP_WIDTH, 1);
 
         assert_eq!(rows.len(), 1);
-        assert!(rows[0].contains("0-9"), "{:?}", rows[0]);
+        assert!(rows[0].contains("1-9"), "{:?}", rows[0]);
     }
 
     /// An SGR left open would carry into whatever herdr draws after the popup.
